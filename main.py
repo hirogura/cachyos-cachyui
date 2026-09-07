@@ -3313,7 +3313,7 @@ async def snapper_snapshots(config: str = "root"):
         if r2["returncode"] != 0:
             raise HTTPException(status_code=500, detail=(r2["stderr"] or r2["stdout"]).strip() or "スナップショット一覧を取得できませんでした")
         snapshots = _parse_snapper_list_plain(r2["stdout"])
-    snapshots.sort(key=lambda s: s["number"])
+    snapshots.sort(key=lambda s: s["number"], reverse=True)
     return {"config": cfg, "snapshots": snapshots, "count": len(snapshots)}
 
 
