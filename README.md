@@ -91,6 +91,13 @@ cd cachyos-cachyui
 sudo bash setup.sh
 ```
 
+または `install.sh` をダウンロードして実行 (タイムゾーン設定・Tailscale 接続まで自動で行います):
+
+```bash
+curl -fsSL -o install.sh https://raw.githubusercontent.com/hirogura/cachyos-cachyui/main/install.sh
+bash install.sh
+```
+
 オプション:
 
 ```bash
