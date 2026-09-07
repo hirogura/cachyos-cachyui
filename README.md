@@ -31,6 +31,8 @@ Webベースの CachyOS 管理ツール。Tailscale内のHTTPS経由でアクセ
 | Limine編集 | Limineエントリー一覧・削除、ISOブートエントリー追加 (cachy-isoboot 方式)、/iso 状態表示・create-isopart 誘導、CachyOS ISOダウンロード・汎用ISOダウンロード（/isoへwget保存、進捗表示・キャンセル対応）、default_entry 設定 |
 | selfcode / Easy LXD / VM Manager | 連携アプリの導入と起動。未インストールの場合は確認ダイアログ表示後にターミナルでインストール、インストール済みならサイトを新しいタブで開く |
 | バックアップ/復元 | /iso 内の Clonezilla Live ISO からカーネルを取り出して Limine 起動する無人パーティションバックアップ・復元 (cachyos-clonezilla-auto 方式) |
+| Snapper | snapper スナップショットの一覧・作成・復元 (rollback)・削除 |
+| アプリ | よく使うアプリ (日本語入力・Chrome・Thunderbird・LibreOffice・VLC・SSH・リモートデスクトップ) のチェック式一括インストールとデスクトップショートカット作成 (cachyos-scripts の 3-soft.sh / 4-desktopicon.sh と同じ内容) |
 | cachy-UI一括管理 | Tailnet内で稼働中のcachy-UIを自動検出して一覧表示。ピン留めしたサーバーをページ上部に固定表示し、ホスト名クリックで新しいタブで開く |
 | システム操作 | cachy-UIの再起動・アップデート、PC本体の再起動・シャットダウン |
 
@@ -53,6 +55,13 @@ Webベースの CachyOS 管理ツール。Tailscale内のHTTPS経由でアクセ
 - 復元時: `default_entry` を AutoRestore に一時設定 (ocs_prerun 先頭で元に戻すため繰り返し実行なし)
 - `toram` で起動するため RAM に余裕が必要です（目安: 空き 2GB 以上）
 - **Secure Boot非対応**のため、無効化しておく必要があります
+
+### アプリ導入について
+
+[cachyos-scripts](https://github.com/hirogura/cachyos-scripts.git) と同じ内容です。
+
+- **アプリのインストール**: [3-soft.sh](https://github.com/hirogura/cachyos-scripts.git) を参考に、日本語入力 (fcitx5 + Mozc の [cachyos-mozcjp.sh](https://github.com/hirogura/scripts/main/cachyos-mozcjp.sh) を実行)・Google Chrome (`paru` 経由)・Thunderbird・LibreOffice・VLC・SSH (`sshd` 有効化 + `ufw allow ssh`)・リモートデスクトップ (`krdp`) をチェック式で一括インストールします。
+- **デスクトップショートカット**: [4-desktopicon.sh](https://github.com/hirogura/cachyos-scripts.git) を参考に、Chrome / Thunderbird / LibreOffice (Calc・Writer・Impress) / VLC / Dolphin / KDEシステム設定 / Konsole / KWrite / システムモニタ / アップデート (`pacman -Syu`) のショートカットをチェック式でデスクトップに作成します。
 
 ### 連携アプリ
 

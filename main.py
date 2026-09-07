@@ -3153,6 +3153,556 @@ async def cachyos_download(req: Request):
     return await _start_iso_download(url, filename)
 
 
+# ============================================================
+# 8.5 Snapper スナップショット管理
+# ============================================================
+SNAPPER_CONFIG_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+SNAPPER_CLEANUP_VALUES = {"number", "timeline", "empty"}
+
+
+def _validate_snapper_config(config: str) -> str:
+    """snapper設定名を検証する (既定は root)。"""
+    config = (config or "").strip() or "root"
+    if not SNAPPER_CONFIG_RE.fullmatch(config):
+        raise HTTPException(status_code=400, detail="invalid config name")
+    return config
+
+
+def _validate_snapshot_number(number) -> int:
+    try:
+        n = int(number)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="invalid snapshot number")
+    if n < 0:
+        raise HTTPException(status_code=400, detail="invalid snapshot number")
+    return n
+
+
+def _parse_snapper_list_csv(stdout: str) -> list[dict] | None:
+    """snapper --csvout list の出力をパースする。失敗時は None。"""
+    import csv as _csv
+    import io as _io
+
+    lines = [l for l in stdout.splitlines() if l.strip()]
+    if not lines:
+        return []
+    try:
+        rows = list(_csv.reader(_io.StringIO("\n".join(lines))))
+    except Exception:
+        return None
+    if not rows:
+        return []
+    header = [c.strip().lower() for c in rows[0]]
+    # ヘッダ行でなければ CSV 形式ではない
+    if not any(h in ("#", "number", "no.", "no") for h in header):
+        return None
+
+    def _col(*names):
+        for i, h in enumerate(header):
+            if h in names:
+                return i
+        return None
+
+    i_num = _col("#", "number", "no.", "no")
+    i_type = _col("type")
+    i_pre = _col("pre #", "pre number", "pre", "pre#")
+    i_date = _col("date")
+    i_user = _col("user")
+    i_cleanup = _col("cleanup")
+    i_desc = _col("description")
+    i_userdata = _col("userdata")
+    snapshots = []
+    for r in rows[1:]:
+        if i_num is None or i_num >= len(r):
+            continue
+        num = r[i_num].strip()
+        if not num.isdigit():
+            continue
+        snapshots.append({
+            "number": int(num),
+            "type": r[i_type].strip() if i_type is not None and i_type < len(r) else "",
+            "pre": r[i_pre].strip() if i_pre is not None and i_pre < len(r) else "",
+            "date": r[i_date].strip() if i_date is not None and i_date < len(r) else "",
+            "user": r[i_user].strip() if i_user is not None and i_user < len(r) else "",
+            "cleanup": r[i_cleanup].strip() if i_cleanup is not None and i_cleanup < len(r) else "",
+            "description": r[i_desc].strip() if i_desc is not None and i_desc < len(r) else "",
+            "userdata": r[i_userdata].strip() if i_userdata is not None and i_userdata < len(r) else "",
+        })
+    return snapshots
+
+
+def _parse_snapper_list_plain(stdout: str) -> list[dict]:
+    """snapper list (表形式) の出力をパースするフォールバック。"""
+    snapshots = []
+    for line in stdout.splitlines():
+        if "|" not in line:
+            continue
+        cols = [c.strip() for c in line.split("|")]
+        if not cols or not cols[0].isdigit():
+            continue
+        # 期待する列: # | Type | Pre # | Date | User | Cleanup | Description | Userdata
+        snapshots.append({
+            "number": int(cols[0]),
+            "type": cols[1] if len(cols) > 1 else "",
+            "pre": cols[2] if len(cols) > 2 else "",
+            "date": cols[3] if len(cols) > 3 else "",
+            "user": cols[4] if len(cols) > 4 else "",
+            "cleanup": cols[5] if len(cols) > 5 else "",
+            "description": cols[6] if len(cols) > 6 else "",
+            "userdata": cols[7] if len(cols) > 7 else "",
+        })
+    return snapshots
+
+
+async def _snapper_list_configs() -> list[dict]:
+    """snapper list-configs をパースして設定一覧を返す。"""
+    r = await run_cmd(_sudo("snapper --csvout list-configs 2>/dev/null"), timeout=10)
+    configs: list[dict] = []
+    if r["returncode"] == 0 and r["stdout"].strip():
+        import csv as _csv
+        import io as _io
+        try:
+            rows = list(_csv.reader(_io.StringIO(r["stdout"])))
+            if rows:
+                header = [c.strip().lower() for c in rows[0]]
+                i_cfg = next((i for i, h in enumerate(header) if h == "config"), 0)
+                i_sub = next((i for i, h in enumerate(header) if h == "subvolume"), 1)
+                for row in rows[1:]:
+                    if len(row) > i_cfg and row[i_cfg].strip():
+                        configs.append({
+                            "config": row[i_cfg].strip(),
+                            "subvolume": row[i_sub].strip() if len(row) > i_sub else "",
+                        })
+                return configs
+        except Exception:
+            pass
+    # フォールバック: 表形式
+    r2 = await run_cmd(_sudo("snapper list-configs 2>/dev/null"), timeout=10)
+    for line in r2["stdout"].splitlines():
+        line = line.strip()
+        if not line or "|" not in line:
+            continue
+        cols = [c.strip() for c in line.split("|")]
+        if cols[0].lower() == "config" or set(line) <= set("-+| "):
+            continue
+        if SNAPPER_CONFIG_RE.fullmatch(cols[0] or ""):
+            configs.append({"config": cols[0], "subvolume": cols[1] if len(cols) > 1 else ""})
+    return configs
+
+
+@app.get("/api/snapper/status")
+async def snapper_status():
+    """snapper の導入状態と設定一覧を返す。"""
+    which = await run_cmd("which snapper", timeout=5)
+    installed = which["returncode"] == 0
+    configs = await _snapper_list_configs() if installed else []
+    return {"installed": installed, "configs": configs}
+
+
+@app.get("/api/snapper/snapshots")
+async def snapper_snapshots(config: str = "root"):
+    """指定設定のスナップショット一覧を返す。"""
+    cfg = _validate_snapper_config(config)
+    which = await run_cmd("which snapper", timeout=5)
+    if which["returncode"] != 0:
+        raise HTTPException(status_code=500, detail="snapper がインストールされていません (sudo pacman -S snapper)")
+    r = await run_cmd(_sudo(f"snapper -c {shlex.quote(cfg)} --csvout list 2>&1"), timeout=15)
+    snapshots = _parse_snapper_list_csv(r["stdout"]) if r["stdout"] else None
+    if snapshots is None:
+        r2 = await run_cmd(_sudo(f"snapper -c {shlex.quote(cfg)} list 2>&1"), timeout=15)
+        if r2["returncode"] != 0:
+            raise HTTPException(status_code=500, detail=(r2["stderr"] or r2["stdout"]).strip() or "スナップショット一覧を取得できませんでした")
+        snapshots = _parse_snapper_list_plain(r2["stdout"])
+    snapshots.sort(key=lambda s: s["number"])
+    return {"config": cfg, "snapshots": snapshots, "count": len(snapshots)}
+
+
+@app.post("/api/snapper/create")
+async def snapper_create(req: Request):
+    """スナップショットを作成する。"""
+    data = await req.json()
+    cfg = _validate_snapper_config(data.get("config", "root"))
+    description = (data.get("description") or "").strip() or f"cachy-UI manual {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    cleanup = (data.get("cleanup") or "").strip()
+    if cleanup and cleanup not in SNAPPER_CLEANUP_VALUES:
+        raise HTTPException(status_code=400, detail="invalid cleanup value")
+    cmd = _sudo(f"snapper -c {shlex.quote(cfg)} create --description {shlex.quote(description)}")
+    if cleanup:
+        cmd += f" --cleanup {shlex.quote(cleanup)}"
+    cmd += " --print-number"
+    r = await run_cmd(cmd, timeout=60)
+    if r["returncode"] != 0:
+        err = (r["stderr"] or r["stdout"]).strip()
+        return {"success": False, "message": f"スナップショットの作成に失敗しました: {err}"}
+    num = r["stdout"].strip().splitlines()
+    num = num[-1].strip() if num else ""
+    return {"success": True, "message": f"スナップショット #{num} を作成しました ({description})" if num else "スナップショットを作成しました"}
+
+
+@app.post("/api/snapper/delete")
+async def snapper_delete(req: Request):
+    """スナップショットを削除する。"""
+    data = await req.json()
+    cfg = _validate_snapper_config(data.get("config", "root"))
+    number = _validate_snapshot_number(data.get("number"))
+    r = await run_cmd(_sudo(f"snapper -c {shlex.quote(cfg)} delete {number}"), timeout=60)
+    if r["returncode"] != 0:
+        err = (r["stderr"] or r["stdout"]).strip()
+        return {"success": False, "message": f"スナップショット #{number} の削除に失敗しました: {err}"}
+    return {"success": True, "message": f"スナップショット #{number} を削除しました"}
+
+
+@app.post("/api/snapper/restore")
+async def snapper_restore(req: Request):
+    """スナップショットから復元 (snapper rollback) する。"""
+    data = await req.json()
+    cfg = _validate_snapper_config(data.get("config", "root"))
+    number = _validate_snapshot_number(data.get("number"))
+    r = await run_cmd(_sudo(f"snapper -c {shlex.quote(cfg)} rollback {number}"), timeout=180)
+    if r["returncode"] != 0:
+        err = (r["stderr"] or r["stdout"]).strip()
+        return {"success": False, "message": f"スナップショット #{number} への復元に失敗しました: {err}"}
+    out = (r["stdout"] or "").strip()
+    msg = f"スナップショット #{number} に復元しました。変更を反映するには再起動してください。"
+    if out:
+        msg += f"\n{out}"
+    return {"success": True, "message": msg}
+
+
+# ============================================================
+# 8.6 アプリ導入 (cachyos-scripts 方式)
+# ============================================================
+# 参考: https://github.com/hirogura/cachyos-scripts.git
+#   3-soft.sh (日本語入力/mozc・Chrome・Thunderbird・LibreOffice・VLC)
+#   4-desktopicon.sh (デスクトップショートカット)
+MOZC_SETUP_URL = "https://raw.githubusercontent.com/hirogura/scripts/main/cachyos-mozcjp.sh"
+
+APP_INSTALL_KEYS = ("japanese", "chrome", "thunderbird", "libreoffice", "vlc", "ssh", "rdp")
+
+APP_LABELS = {
+    "japanese": "日本語入力",
+    "chrome": "Google Chrome",
+    "thunderbird": "Thunderbird",
+    "libreoffice": "LibreOffice",
+    "vlc": "VLC",
+    "ssh": "SSH",
+    "rdp": "リモートデスクトップ",
+}
+
+
+def _as_user_cmd(username: str, cmd: str) -> str:
+    """指定ユーザーとしてコマンドを実行する (paru は root 実行不可のため)。"""
+    base = f"sudo -u {shlex.quote(username)} {cmd}"
+    if IS_ROOT:
+        return base
+    return f"sudo {base}"
+
+
+async def _check_app_status() -> dict:
+    """各アプリの導入状態を返す。"""
+    status: dict = {}
+
+    q_mozc = await run_cmd("pacman -Q fcitx5-mozc 2>/dev/null", timeout=10)
+    status["japanese"] = {"installed": q_mozc["returncode"] == 0,
+                          "detail": q_mozc["stdout"].strip().splitlines()[0] if q_mozc["returncode"] == 0 and q_mozc["stdout"].strip() else ""}
+
+    q_chrome = await run_cmd("pacman -Q google-chrome 2>/dev/null", timeout=10)
+    w_chrome = await run_cmd("which google-chrome 2>/dev/null", timeout=5)
+    status["chrome"] = {"installed": q_chrome["returncode"] == 0 or w_chrome["returncode"] == 0,
+                        "detail": q_chrome["stdout"].strip().splitlines()[0] if q_chrome["returncode"] == 0 and q_chrome["stdout"].strip() else ""}
+
+    q_tb = await run_cmd("pacman -Q thunderbird 2>/dev/null", timeout=10)
+    status["thunderbird"] = {"installed": q_tb["returncode"] == 0,
+                             "detail": q_tb["stdout"].strip().splitlines()[0] if q_tb["returncode"] == 0 and q_tb["stdout"].strip() else ""}
+
+    q_lo = await run_cmd("pacman -Q libreoffice-fresh-ja 2>/dev/null", timeout=10)
+    status["libreoffice"] = {"installed": q_lo["returncode"] == 0,
+                             "detail": q_lo["stdout"].strip().splitlines()[0] if q_lo["returncode"] == 0 and q_lo["stdout"].strip() else ""}
+
+    q_vlc = await run_cmd("pacman -Q vlc 2>/dev/null", timeout=10)
+    status["vlc"] = {"installed": q_vlc["returncode"] == 0,
+                     "detail": q_vlc["stdout"].strip().splitlines()[0] if q_vlc["returncode"] == 0 and q_vlc["stdout"].strip() else ""}
+
+    en_ssh = await run_cmd("systemctl is-enabled sshd 2>/dev/null", timeout=5)
+    ac_ssh = await run_cmd("systemctl is-active sshd 2>/dev/null", timeout=5)
+    ssh_on = en_ssh["stdout"].strip() == "enabled" or ac_ssh["stdout"].strip() == "active"
+    status["ssh"] = {"installed": ssh_on,
+                     "detail": f"{en_ssh['stdout'].strip()}/{ac_ssh['stdout'].strip()}" if (en_ssh["stdout"] or ac_ssh["stdout"]) else ""}
+
+    q_krdp = await run_cmd("pacman -Q krdp 2>/dev/null", timeout=10)
+    status["rdp"] = {"installed": q_krdp["returncode"] == 0,
+                     "detail": q_krdp["stdout"].strip().splitlines()[0] if q_krdp["returncode"] == 0 and q_krdp["stdout"].strip() else ""}
+    return status
+
+
+async def _install_single_app(key: str) -> dict:
+    """アプリを1件インストールする。戻り値: {success, output}。"""
+    logs: list[str] = []
+
+    async def _step(cmd: str, timeout: int = 900, extra_env: dict | None = None) -> bool:
+        r = await run_cmd(cmd, timeout=timeout, extra_env=extra_env)
+        if r["stdout"].strip():
+            logs.append(r["stdout"].strip()[-2000:])
+        if r["returncode"] != 0:
+            err = (r["stderr"] or r["stdout"]).strip()[-2000:]
+            logs.append(f"エラー: {err}")
+            return False
+        return True
+
+    if key == "japanese":
+        # 3-soft.sh と同じ方式: mozc セットアップスクリプトを実行する。
+        # スクリプトは SUDO_USER のホームに fcitx5/mozc 設定を書き込むため、
+        # プライマリユーザーを明示して実行する。
+        username, home, _shell = get_primary_user()
+        ok = await _step(
+            _sudo(f"bash -c {shlex.quote(f'curl -fsSL {MOZC_SETUP_URL} | bash')}"),
+            timeout=600,
+            extra_env={"SUDO_USER": username, "HOME": home if IS_ROOT else os.environ.get("HOME", home)},
+        )
+        return {"success": ok, "output": "\n".join(logs)[-3000:]}
+    elif key == "chrome":
+        username, home, _shell = get_primary_user()
+        if not await _step(_sudo("pacman -S --noconfirm --needed paru"), timeout=600):
+            return {"success": False, "output": "\n".join(logs)[-3000:]}
+        ok = await _step(
+            _as_user_cmd(username, "paru -S --noconfirm --needed google-chrome"),
+            timeout=1800,
+            extra_env={"HOME": home},
+        )
+        return {"success": ok, "output": "\n".join(logs)[-3000:]}
+    elif key == "thunderbird":
+        ok = await _step(_sudo("pacman -S --noconfirm --needed thunderbird thunderbird-i18n-ja"), timeout=900)
+        return {"success": ok, "output": "\n".join(logs)[-3000:]}
+    elif key == "libreoffice":
+        ok = await _step(_sudo("pacman -S --noconfirm --needed libreoffice-fresh-ja"), timeout=900)
+        return {"success": ok, "output": "\n".join(logs)[-3000:]}
+    elif key == "vlc":
+        ok = await _step(_sudo("pacman -S --noconfirm --needed vlc"), timeout=900)
+        return {"success": ok, "output": "\n".join(logs)[-3000:]}
+    elif key == "ssh":
+        if not await _step(_sudo("systemctl enable --now sshd"), timeout=60):
+            return {"success": False, "output": "\n".join(logs)[-3000:]}
+        # ufw が無い環境ではスキップ扱いにする
+        w_ufw = await run_cmd("which ufw", timeout=5)
+        if w_ufw["returncode"] != 0:
+            logs.append("ufw がインストールされていないためファイアウォール設定をスキップしました (sshd 自体は有効化済み)")
+            return {"success": True, "output": "\n".join(logs)[-3000:]}
+        ok = await _step(_sudo("ufw allow ssh"), timeout=60)
+        return {"success": ok, "output": "\n".join(logs)[-3000:]}
+    elif key == "rdp":
+        ok = await _step(_sudo("pacman -S --noconfirm --needed krdp"), timeout=900)
+        return {"success": ok, "output": "\n".join(logs)[-3000:]}
+    return {"success": False, "output": "不明なアプリ指定です"}
+
+
+@app.get("/api/apps/status")
+async def apps_status():
+    """各アプリの導入状態を返す。"""
+    return {"apps": await _check_app_status()}
+
+
+@app.post("/api/apps/install")
+async def apps_install(req: Request):
+    """チェックされたアプリをインストールする。"""
+    data = await req.json()
+    keys = data.get("apps") or []
+    if not isinstance(keys, list) or not keys:
+        raise HTTPException(status_code=400, detail="apps are required")
+    clean = [k for k in keys if k in APP_INSTALL_KEYS]
+    if not clean:
+        raise HTTPException(status_code=400, detail="invalid apps")
+    # 重複除去 (順序維持)
+    seen: list[str] = []
+    for k in clean:
+        if k not in seen:
+            seen.append(k)
+    results: dict = {}
+    for k in seen:
+        results[k] = await _install_single_app(k)
+    success = all(v["success"] for v in results.values())
+    summary = ", ".join(f"{APP_LABELS[k]}: {'OK' if v['success'] else 'NG'}" for k, v in results.items())
+    return {"success": success, "results": results, "message": summary}
+
+
+# --- デスクトップショートカット (4-desktopicon.sh 方式) ---
+SHORTCUT_DEFS: dict[str, dict] = {
+    "google-chrome": {"label": "Google Chrome", "candidates": ["google-chrome.desktop"]},
+    "thunderbird": {"label": "Thunderbird", "candidates": ["thunderbird.desktop", "org.mozilla.Thunderbird.desktop"]},
+    "libreoffice-calc": {"label": "LibreOffice Calc", "candidates": ["libreoffice-calc.desktop", "org.libreoffice.calc.desktop"]},
+    "libreoffice-writer": {"label": "LibreOffice Writer", "candidates": ["libreoffice-writer.desktop", "org.libreoffice.writer.desktop"]},
+    "libreoffice-impress": {"label": "LibreOffice Impress", "candidates": ["libreoffice-impress.desktop", "org.libreoffice.impress.desktop"]},
+    "vlc": {"label": "VLC", "candidates": ["vlc.desktop"]},
+    "dolphin": {"label": "Dolphin", "candidates": ["org.kde.dolphin.desktop"]},
+    "systemsettings": {"label": "KDEシステム設定", "candidates": ["systemsettings.desktop", "kdesystemsettings.desktop", "org.kde.systemsettings.desktop"]},
+    "konsole": {"label": "Konsole", "candidates": ["org.kde.konsole.desktop", "konsole.desktop"]},
+    "kwrite": {"label": "KWrite", "candidates": ["org.kde.kwrite.desktop", "kwrite.desktop"]},
+    "systemmonitor": {"label": "システムモニタ", "candidates": ["org.kde.plasma-systemmonitor.desktop", "plasma-systemmonitor.desktop", "org.kde.ksysguard.desktop"]},
+    "update": {"label": "アップデート", "special": "update"},
+}
+
+SHORTCUT_APPDIRS = [
+    "/usr/local/share/applications",
+    "/usr/share/applications",
+    ".local/share/applications",  # ホーム相対
+    ".local/share/flatpak/exports/share/applications",
+    "/var/lib/flatpak/exports/share/applications",
+    "/var/lib/snapd/desktop/applications",
+]
+
+PACMAN_UPDATE_SCRIPT = """#!/bin/bash
+# システム全体を更新する (sudo pacman -Syu --noconfirm)
+echo "システム更新を開始します..."
+sudo pacman -Syu --noconfirm
+echo ""
+read -r -p "更新が完了しました。Enter キーで閉じます..."
+"""
+
+
+def _get_desktop_dir(username: str, home: str) -> str:
+    """プライマリユーザーのデスクトップディレクトリを取得する (4-desktopicon.sh と同じ方式)。"""
+    dest = ""
+    r = subprocess.run(
+        ["sudo", "-u", username, "xdg-user-dir", "DESKTOP"],
+        capture_output=True, text=True, timeout=10,
+    ) if IS_ROOT else subprocess.run(
+        ["xdg-user-dir", "DESKTOP"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if r.returncode == 0 and r.stdout.strip():
+        dest = r.stdout.strip()
+    if not dest:
+        cand_jp = os.path.join(home, "デスクトップ")
+        dest = cand_jp if os.path.isdir(cand_jp) else os.path.join(home, "Desktop")
+    os.makedirs(dest, exist_ok=True)
+    try:
+        pw = pwd.getpwnam(username)
+        os.chown(dest, pw.pw_uid, pw.pw_gid)
+    except Exception:
+        pass
+    return dest
+
+
+def _find_desktop_source(candidates: list[str], home: str) -> str | None:
+    """XDG 標準ディレクトリから .desktop ファイルを探す。"""
+    for d in SHORTCUT_APPDIRS:
+        base = os.path.join(home, d) if d.startswith(".") else d
+        if not os.path.isdir(base):
+            continue
+        for f in candidates:
+            full = os.path.join(base, f)
+            if os.path.isfile(full):
+                return full
+    return None
+
+
+def _chown_user(path: str, username: str) -> None:
+    try:
+        pw = pwd.getpwnam(username)
+        os.chown(path, pw.pw_uid, pw.pw_gid)
+    except Exception:
+        pass
+
+
+def _create_update_shortcut(desktop_dir: str, home: str, username: str) -> str:
+    """「アップデート」ショートカットを作成する (4-desktopicon.sh 第5節と同等)。"""
+    bin_dir = os.path.join(home, ".local", "bin")
+    os.makedirs(bin_dir, exist_ok=True)
+    script_path = os.path.join(bin_dir, "pacman-update.sh")
+    with open(script_path, "w", encoding="utf-8") as f:
+        f.write(PACMAN_UPDATE_SCRIPT)
+    os.chmod(script_path, 0o755)
+    _chown_user(script_path, username)
+    desktop_file = os.path.join(desktop_dir, "update.desktop")
+    with open(desktop_file, "w", encoding="utf-8") as f:
+        f.write(
+            "[Desktop Entry]\n"
+            "Type=Application\n"
+            "Version=1.0\n"
+            "Name=アップデート\n"
+            "Name[en]=Update\n"
+            "GenericName=システム更新\n"
+            "Comment=システム全体を更新する (pacman -Syu)\n"
+            f"Exec={script_path}\n"
+            "Icon=system-software-update\n"
+            "Terminal=true\n"
+            "Categories=System;Utility;\n"
+        )
+    os.chmod(desktop_file, 0o755)
+    _chown_user(desktop_file, username)
+    return desktop_file
+
+
+@app.get("/api/apps/shortcuts")
+async def apps_shortcuts_list():
+    """作成可能なショートカット一覧 (ソース有無・作成済み) を返す。"""
+    username, home, _shell = get_primary_user()
+    try:
+        desktop_dir = await asyncio.to_thread(_get_desktop_dir, username, home)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"デスクトップディレクトリを取得できませんでした: {e}")
+    items = []
+    for key, spec in SHORTCUT_DEFS.items():
+        if spec.get("special") == "update":
+            src = True
+            dest = os.path.join(desktop_dir, "update.desktop")
+        else:
+            src_path = await asyncio.to_thread(_find_desktop_source, spec["candidates"], home)
+            src = bool(src_path)
+            dest = os.path.join(desktop_dir, os.path.basename(src_path)) if src_path else ""
+        items.append({
+            "key": key,
+            "label": spec["label"],
+            "source_found": src,
+            "created": bool(dest) and os.path.isfile(dest),
+            "dest": dest,
+        })
+    return {"desktop_dir": desktop_dir, "shortcuts": items}
+
+
+@app.post("/api/apps/shortcuts")
+async def apps_shortcuts_create(req: Request):
+    """チェックされたデスクトップショートカットを作成する。"""
+    data = await req.json()
+    keys = data.get("shortcuts") or []
+    if not isinstance(keys, list) or not keys:
+        raise HTTPException(status_code=400, detail="shortcuts are required")
+    clean = [k for k in keys if k in SHORTCUT_DEFS]
+    if not clean:
+        raise HTTPException(status_code=400, detail="invalid shortcuts")
+    username, home, _shell = get_primary_user()
+    try:
+        desktop_dir = await asyncio.to_thread(_get_desktop_dir, username, home)
+    except Exception as e:
+        return {"success": False, "message": f"デスクトップディレクトリを取得できませんでした: {e}"}
+    results: dict = {}
+    for key in dict.fromkeys(clean):
+        spec = SHORTCUT_DEFS[key]
+        try:
+            if spec.get("special") == "update":
+                dest = await asyncio.to_thread(_create_update_shortcut, desktop_dir, home, username)
+                results[key] = {"success": True, "message": dest}
+                continue
+            src = await asyncio.to_thread(_find_desktop_source, spec["candidates"], home)
+            if not src:
+                results[key] = {"success": False, "message": ".desktop ファイルが見つかりません (アプリ未インストールの可能性)"}
+                continue
+            dest = os.path.join(desktop_dir, os.path.basename(src))
+
+            def _copy() -> None:
+                import shutil as _shutil
+                _shutil.copyfile(src, dest)
+                os.chmod(dest, 0o755)
+                _chown_user(dest, username)
+
+            await asyncio.to_thread(_copy)
+            results[key] = {"success": True, "message": dest}
+        except Exception as e:
+            results[key] = {"success": False, "message": str(e)}
+    success = all(v["success"] for v in results.values())
+    summary = ", ".join(f"{SHORTCUT_DEFS[k]['label']}: {'OK' if v['success'] else 'NG'}" for k, v in results.items())
+    return {"success": success, "results": results, "message": summary}
+
+
 # 9. cachy-UI Fleet Management (Tailnet-wide bulk management)
 # ============================================================
 FLEET_PINS_FILE = Path(__file__).parent / "cachyui_fleet_pins.json"

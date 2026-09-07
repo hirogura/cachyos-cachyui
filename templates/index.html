@@ -17,7 +17,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       </div>
       <div class="logo-info">
-        <span class="logo-text">cachy-UI<span class="logo-version">v.1.8.2</span></span>
+        <span class="logo-text">cachy-UI<span class="logo-version">v.1.9.0</span></span>
         <span class="logo-hostname" id="sidebar-hostname">...</span>
       </div>
     </div>
@@ -73,6 +73,14 @@
       <li data-tab="backup">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M23 3H1v5h22z"/><path d="M10 12h4"/></svg>
         <span>バックアップ/復元</span>
+      </li>
+      <li data-tab="snapper">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/><circle cx="12" cy="12" r="3.5"/><path d="M19.07 4.93l-2.12 2.12M6.34 17.66l-2.12 2.12M19.07 19.07l-2.12-2.12M6.34 6.34L4.22 4.22"/></svg>
+        <span>Snapper</span>
+      </li>
+      <li data-tab="apps">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M17.5 14v6M14.5 17h6"/></svg>
+        <span>アプリ</span>
       </li>
       <li data-tab="fleet">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
@@ -693,6 +701,85 @@
     </section>
 
 
+    <!-- Snapper -->
+    <section id="tab-snapper" class="tab-content">
+      <div class="terminal-header">
+        <h1>Snapper</h1>
+        <div class="btn-group">
+          <button class="btn btn-secondary" onclick="loadSnapperPage()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+            更新
+          </button>
+          <button class="btn btn-success" id="btn-snapper-create" onclick="openSnapperCreateModal()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            作成
+          </button>
+        </div>
+      </div>
+      <div id="snapper-status-msg" class="status-msg"></div>
+      <div class="form-group" style="margin-bottom:1rem;max-width:320px;">
+        <label for="snapper-config-select">設定</label>
+        <select id="snapper-config-select" onchange="loadSnapperSnapshots()" style="width:100%;margin-top:0.25rem;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;" disabled>
+          <option value="">読み込み中...</option>
+        </select>
+      </div>
+      <h2>スナップショット一覧</h2>
+      <div id="snapper-list-container">
+        <p class="muted">読み込み中...</p>
+      </div>
+
+      <!-- Snapper Create Modal -->
+      <div id="snapper-create-modal" class="modal-overlay" style="display:none;">
+        <div class="modal-card">
+          <h3>スナップショットを作成</h3>
+          <p id="snapper-create-config-label" class="muted" style="margin-bottom:1rem;"></p>
+          <div class="form-group">
+            <label for="snapper-create-desc">説明</label>
+            <input type="text" id="snapper-create-desc" placeholder="例: 更新前の手動スナップショット" style="width:100%;margin-top:0.25rem;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;">
+          </div>
+          <div class="form-group" style="margin-top:0.75rem;">
+            <label for="snapper-create-cleanup">クリーンアップ</label>
+            <select id="snapper-create-cleanup" style="width:100%;margin-top:0.25rem;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;">
+              <option value="">なし</option>
+              <option value="number">number</option>
+              <option value="timeline">timeline</option>
+            </select>
+          </div>
+          <div id="snapper-create-status" class="status-msg" style="margin-top:0.75rem;"></div>
+          <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="closeSnapperCreateModal()">キャンセル</button>
+            <button class="btn btn-success" id="btn-snapper-create-submit" onclick="submitSnapperCreate()">作成</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Apps -->
+    <section id="tab-apps" class="tab-content">
+      <h1>アプリ</h1>
+      <div id="apps-status-msg" class="status-msg"></div>
+
+      <h2>アプリのインストール</h2>
+      <div class="stat-card" style="margin-bottom:1rem;">
+        <p class="muted" style="margin-bottom:0.75rem;">インストールしたいアプリにチェックを入れて「インストール」を押してください（<a href="https://github.com/hirogura/cachyos-scripts.git" target="_blank" rel="noopener noreferrer">cachyos-scripts</a> の 3-soft.sh と同じ内容）。Google Chrome のビルドなど時間がかかる場合があります。</p>
+        <div id="apps-install-list"></div>
+        <div id="apps-install-status" class="status-msg"></div>
+        <div style="display:flex;justify-content:flex-end;margin-top:0.5rem;">
+          <button class="btn btn-primary" id="btn-apps-install" onclick="installSelectedApps()">インストール</button>
+        </div>
+      </div>
+
+      <h2>デスクトップショートカット</h2>
+      <div class="stat-card" style="margin-bottom:1rem;">
+        <p class="muted" style="margin-bottom:0.75rem;">作成したいショートカットにチェックを入れて「ショートカット作成」を押してください（4-desktopicon.sh と同じ内容）。</p>
+        <div id="apps-shortcut-list"><p class="muted">読み込み中...</p></div>
+        <div id="apps-shortcut-status" class="status-msg"></div>
+        <div style="display:flex;justify-content:flex-end;margin-top:0.5rem;">
+          <button class="btn btn-primary" id="btn-apps-shortcut" onclick="createSelectedShortcuts()">ショートカット作成</button>
+        </div>
+      </div>
+    </section>
+
     <!-- cachy-UI Fleet (Bulk Management) -->
     <section id="tab-fleet" class="tab-content">
       <h1>cachy-UI一括管理ページ</h1>
@@ -741,6 +828,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=30"></script>
+  <script src="/static/app.js?v=31"></script>
 </body>
 </html>

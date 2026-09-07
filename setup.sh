@@ -124,6 +124,12 @@ cachyui ALL=(ALL) NOPASSWD: /usr/bin/systemctl, \
     /usr/bin/sfdisk, \
     /usr/bin/partprobe, \
     /usr/bin/parted, \
+    /usr/bin/snapper, \
+    /usr/sbin/snapper, \
+    /usr/bin/btrfs, \
+    /usr/sbin/btrfs, \
+    /usr/bin/ufw, \
+    /usr/sbin/ufw, \
     /usr/bin/efibootmgr, \
     /usr/bin/mokutil, \
     /usr/bin/du, \

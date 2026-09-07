@@ -39,7 +39,12 @@ function switchTab(tab) {
   } else if (tab === 'limine') {
     loadLimine();
   } else if (tab === 'backup') {
-    loadBackupPage();} else if (tab === 'fleet') {
+    loadBackupPage();
+  } else if (tab === 'snapper') {
+    loadSnapperPage();
+  } else if (tab === 'apps') {
+    loadAppsPage();
+  } else if (tab === 'fleet') {
     loadFleetPage();
   }
 }
@@ -2673,6 +2678,351 @@ async function runRestore() {
   }
   await prepareClonezillaRun('restore', device, image,
     `復元を開始しますか？\n\n復元元パーティション: ${device}\nバックアップイメージ: ${image}\n\n⚠️ 現在のシステムは選択したバックアップの内容で上書きされます\n⚠️ Limineエントリを作成し、Clonezilla Live が復元を行います\n⚠️ 処理中に電源を切らないでください`);
+}
+
+// --- Snapper ---
+let snapperConfigs = [];
+
+async function loadSnapperPage() {
+  const sel = document.getElementById('snapper-config-select');
+  const statusEl = document.getElementById('snapper-status-msg');
+  try {
+    const resp = await fetch('/api/snapper/status');
+    const data = await resp.json();
+    if (!data.installed) {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = 'snapper がインストールされていません (sudo pacman -S snapper)';
+      sel.disabled = true;
+      document.getElementById('btn-snapper-create').disabled = true;
+      document.getElementById('snapper-list-container').innerHTML = '';
+      return;
+    }
+    document.getElementById('btn-snapper-create').disabled = false;
+    statusEl.className = 'status-msg';
+    statusEl.textContent = '';
+    snapperConfigs = data.configs || [];
+    if (!snapperConfigs.length) {
+      sel.innerHTML = '<option value="">設定がありません</option>';
+      sel.disabled = true;
+      document.getElementById('snapper-list-container').innerHTML =
+        '<p class="muted">snapper の設定がありません。ターミナルで snapper create-config を実行してください。</p>';
+      return;
+    }
+    const prev = sel.value;
+    sel.innerHTML = snapperConfigs.map(c =>
+      `<option value="${escapeHtml(c.config)}">${escapeHtml(c.config)}${c.subvolume ? ` (${escapeHtml(c.subvolume)})` : ''}</option>`
+    ).join('');
+    sel.disabled = false;
+    if (prev && snapperConfigs.some(c => c.config === prev)) {
+      sel.value = prev;
+    }
+    loadSnapperSnapshots();
+  } catch (e) {
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `Snapper状態取得エラー: ${e.message}`;
+  }
+}
+
+async function loadSnapperSnapshots() {
+  const sel = document.getElementById('snapper-config-select');
+  const config = (sel && sel.value) || 'root';
+  const container = document.getElementById('snapper-list-container');
+  const statusEl = document.getElementById('snapper-status-msg');
+  container.innerHTML = '<p class="muted"><span class="spinner"></span> スナップショット一覧を取得中...</p>';
+  try {
+    const resp = await fetch(`/api/snapper/snapshots?config=${encodeURIComponent(config)}`);
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    if (!data.snapshots || data.snapshots.length === 0) {
+      container.innerHTML = '<p class="muted">スナップショットはありません。ページ上部の「作成」ボタンで作成できます。</p>';
+      return;
+    }
+    container.innerHTML = `
+      <table class="proc-table">
+        <thead>
+          <tr><th>#</th><th>日時</th><th>説明</th><th>クリーンアップ</th><th>操作</th></tr>
+        </thead>
+        <tbody>
+          ${data.snapshots.map(s => `
+            <tr>
+              <td>${s.number}</td>
+              <td>${escapeHtml(s.date || '-')}</td>
+              <td>${escapeHtml(s.description || '-')}<span class="muted"> (${escapeHtml(s.type || '')})</span></td>
+              <td>${escapeHtml(s.cleanup || '-')}</td>
+              <td>
+                <div class="btn-group">
+                  <button class="btn btn-sm btn-primary" onclick="restoreSnapper(${s.number})">復元</button>
+                  <button class="btn btn-sm btn-danger" onclick="deleteSnapper(${s.number})">削除</button>
+                </div>
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`;
+  } catch (e) {
+    container.innerHTML = '';
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `一覧取得エラー: ${e.message}`;
+  }
+}
+
+function openSnapperCreateModal() {
+  const sel = document.getElementById('snapper-config-select');
+  document.getElementById('snapper-create-config-label').textContent =
+    `設定: ${(sel && sel.value) || 'root'}`;
+  document.getElementById('snapper-create-desc').value = '';
+  document.getElementById('snapper-create-cleanup').value = '';
+  document.getElementById('snapper-create-status').className = 'status-msg';
+  document.getElementById('snapper-create-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('snapper-create-desc').focus(), 100);
+}
+
+function closeSnapperCreateModal() {
+  document.getElementById('snapper-create-modal').style.display = 'none';
+}
+
+async function submitSnapperCreate() {
+  const sel = document.getElementById('snapper-config-select');
+  const config = (sel && sel.value) || 'root';
+  const description = document.getElementById('snapper-create-desc').value.trim();
+  const cleanup = document.getElementById('snapper-create-cleanup').value;
+  const statusEl = document.getElementById('snapper-create-status');
+  const submitBtn = document.getElementById('btn-snapper-create-submit');
+
+  statusEl.className = 'status-msg show info';
+  statusEl.innerHTML = '<span class="spinner"></span> 作成中...';
+  submitBtn.disabled = true;
+  try {
+    const resp = await fetch('/api/snapper/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config, description, cleanup }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    submitBtn.disabled = false;
+    if (!resp.ok || !data.success) {
+      throw new Error(data.detail || data.message || `HTTP ${resp.status}`);
+    }
+    statusEl.className = 'status-msg show success';
+    statusEl.textContent = data.message;
+    showStatus(data.message, 'success');
+    setTimeout(() => {
+      closeSnapperCreateModal();
+      loadSnapperSnapshots();
+    }, 1000);
+  } catch (e) {
+    submitBtn.disabled = false;
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `エラー: ${e.message}`;
+  }
+}
+
+async function deleteSnapper(number) {
+  const sel = document.getElementById('snapper-config-select');
+  const config = (sel && sel.value) || 'root';
+  if (!confirm(`スナップショット #${number} を削除しますか？\n\n削除後は元に戻せません。`)) return;
+  const statusEl = document.getElementById('snapper-status-msg');
+  try {
+    const resp = await fetch('/api/snapper/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config, number }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.success) {
+      throw new Error(data.detail || data.message || `HTTP ${resp.status}`);
+    }
+    showStatus(data.message, 'success');
+    loadSnapperSnapshots();
+  } catch (e) {
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `削除エラー: ${e.message}`;
+  }
+}
+
+async function restoreSnapper(number) {
+  const sel = document.getElementById('snapper-config-select');
+  const config = (sel && sel.value) || 'root';
+  if (!confirm(`スナップショット #${number} に復元しますか？\n\n現在のシステム状態は上書きされます。\n復元後は再起動が必要です。`)) return;
+  const statusEl = document.getElementById('snapper-status-msg');
+  statusEl.className = 'status-msg show info';
+  statusEl.innerHTML = '<span class="spinner"></span> 復元中...';
+  try {
+    const resp = await fetch('/api/snapper/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config, number }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.success) {
+      throw new Error(data.detail || data.message || `HTTP ${resp.status}`);
+    }
+    statusEl.className = 'status-msg show success';
+    statusEl.textContent = data.message;
+    showStatus(data.message, 'success');
+  } catch (e) {
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `復元エラー: ${e.message}`;
+  }
+}
+
+// --- Apps ---
+const APPS_INSTALL_DEFS = [
+  { key: 'japanese', label: '日本語入力', desc: 'fcitx5 + Mozc を導入し日本語入力を設定 (cachyos-mozcjp.sh と同じ内容)' },
+  { key: 'chrome', label: 'Google Chrome', desc: 'paru を導入し google-chrome をインストール' },
+  { key: 'thunderbird', label: 'Thunderbird', desc: 'thunderbird + 日本語 language pack' },
+  { key: 'libreoffice', label: 'LibreOffice', desc: 'libreoffice-fresh-ja (日本語版)' },
+  { key: 'vlc', label: 'VLC', desc: 'vlc メディアプレイヤー' },
+  { key: 'ssh', label: 'SSH', desc: 'sshd を有効化・起動し ufw で ssh を許可' },
+  { key: 'rdp', label: 'リモートデスクトップ', desc: 'krdp (KDE リモートデスクトップ)' },
+];
+
+async function loadAppsPage() {
+  await loadAppsStatus();
+  await loadAppsShortcuts();
+}
+
+async function loadAppsStatus() {
+  const listEl = document.getElementById('apps-install-list');
+  const statusEl = document.getElementById('apps-status-msg');
+  listEl.innerHTML = '<p class="muted"><span class="spinner"></span> 導入状態を確認中...</p>';
+  try {
+    const resp = await fetch('/api/apps/status');
+    const data = await resp.json();
+    const apps = data.apps || {};
+    listEl.innerHTML = APPS_INSTALL_DEFS.map(def => {
+      const st = apps[def.key] || {};
+      const badge = st.installed
+        ? '<span class="badge badge-active">導入済み</span>'
+        : '<span class="badge badge-other">未導入</span>';
+      return `
+        <div style="display:flex;gap:0.6rem;align-items:flex-start;padding:0.45rem 0;border-bottom:1px solid var(--border);">
+          <input type="checkbox" class="apps-install-check" value="${def.key}" style="margin-top:0.25rem;">
+          <div style="flex:1;">
+            <div style="display:flex;align-items:center;gap:0.5rem;">
+              <span style="font-weight:600;">${escapeHtml(def.label)}</span>${badge}
+            </div>
+            <div class="muted" style="font-size:0.78rem;">${escapeHtml(def.desc)}${st.detail ? ` — <span style="font-family:monospace;">${escapeHtml(st.detail)}</span>` : ''}</div>
+          </div>
+        </div>`;
+    }).join('');
+    statusEl.className = 'status-msg';
+    statusEl.textContent = '';
+  } catch (e) {
+    listEl.innerHTML = '';
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `状態取得エラー: ${e.message}`;
+  }
+}
+
+async function installSelectedApps() {
+  const checks = Array.from(document.querySelectorAll('.apps-install-check:checked'));
+  if (checks.length === 0) {
+    showStatus('インストールするアプリを選択してください', 'error');
+    return;
+  }
+  const keys = checks.map(c => c.value);
+  const labels = keys.map(k => (APPS_INSTALL_DEFS.find(d => d.key === k) || {}).label || k).join(', ');
+  if (!confirm(`以下のアプリをインストールしますか？\n\n${labels}\n\n時間がかかる場合があります (Chrome のビルド等)。完了までこのページを開いたままお待ちください。`)) return;
+  const statusEl = document.getElementById('apps-install-status');
+  const btn = document.getElementById('btn-apps-install');
+  btn.disabled = true;
+  statusEl.className = 'status-msg show info';
+  statusEl.innerHTML = '<span class="spinner"></span> インストール中... (数分かかる場合があります)';
+  try {
+    const resp = await fetch('/api/apps/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apps: keys }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    btn.disabled = false;
+    if (!resp.ok) {
+      throw new Error(data.detail || `HTTP ${resp.status}`);
+    }
+    const results = data.results || {};
+    const lines = keys.map(k => {
+      const r = results[k] || {};
+      const label = (APPS_INSTALL_DEFS.find(d => d.key === k) || {}).label || k;
+      return `${r.success ? '✅' : '❌'} ${label}`;
+    }).join('\n');
+    statusEl.className = `status-msg show ${data.success ? 'success' : 'error'}`;
+    statusEl.textContent = `${data.message || ''}\n${lines}`;
+    showStatus(data.message || 'インストールが完了しました', data.success ? 'success' : 'error');
+    loadAppsStatus();
+    loadAppsShortcuts();
+  } catch (e) {
+    btn.disabled = false;
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `エラー: ${e.message}`;
+  }
+}
+
+async function loadAppsShortcuts() {
+  const listEl = document.getElementById('apps-shortcut-list');
+  const statusEl = document.getElementById('apps-shortcut-status');
+  listEl.innerHTML = '<p class="muted"><span class="spinner"></span> ショートカット情報を取得中...</p>';
+  try {
+    const resp = await fetch('/api/apps/shortcuts');
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    const items = data.shortcuts || [];
+    if (data.desktop_dir) {
+      listEl.innerHTML = `<p class="muted" style="margin-bottom:0.5rem;">保存先: <code>${escapeHtml(data.desktop_dir)}</code></p>` +
+        items.map(it => {
+          const badge = it.created
+            ? '<span class="badge badge-active">作成済み</span>'
+            : it.source_found
+              ? '<span class="badge badge-other">未作成</span>'
+              : '<span class="badge badge-warn">アプリ未導入</span>';
+          const disabled = it.source_found ? '' : 'disabled';
+          return `
+            <div style="display:flex;gap:0.6rem;align-items:center;padding:0.35rem 0;border-bottom:1px solid var(--border);">
+              <input type="checkbox" class="apps-shortcut-check" value="${escapeHtml(it.key)}" ${disabled}>
+              <span style="flex:1;">${escapeHtml(it.label)}</span>${badge}
+            </div>`;
+        }).join('');
+    }
+    statusEl.className = 'status-msg';
+    statusEl.textContent = '';
+  } catch (e) {
+    listEl.innerHTML = '';
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `ショートカット情報取得エラー: ${e.message}`;
+  }
+}
+
+async function createSelectedShortcuts() {
+  const checks = Array.from(document.querySelectorAll('.apps-shortcut-check:checked'));
+  if (checks.length === 0) {
+    showStatus('作成するショートカットを選択してください', 'error');
+    return;
+  }
+  const keys = checks.map(c => c.value);
+  const statusEl = document.getElementById('apps-shortcut-status');
+  const btn = document.getElementById('btn-apps-shortcut');
+  btn.disabled = true;
+  statusEl.className = 'status-msg show info';
+  statusEl.innerHTML = '<span class="spinner"></span> ショートカットを作成中...';
+  try {
+    const resp = await fetch('/api/apps/shortcuts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ shortcuts: keys }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    btn.disabled = false;
+    if (!resp.ok) {
+      throw new Error(data.detail || `HTTP ${resp.status}`);
+    }
+    statusEl.className = `status-msg show ${data.success ? 'success' : 'error'}`;
+    statusEl.textContent = data.message || '';
+    showStatus(data.message || 'ショートカットを作成しました', data.success ? 'success' : 'error');
+    loadAppsShortcuts();
+  } catch (e) {
+    btn.disabled = false;
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `エラー: ${e.message}`;
+  }
 }
 
 // --- cachy-UI Fleet (一括管理) ---
