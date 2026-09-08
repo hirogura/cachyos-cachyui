@@ -3376,8 +3376,9 @@ async def snapper_restore(req: Request):
 #   3-soft.sh (日本語入力/mozc・Chrome・Thunderbird・LibreOffice・VLC)
 #   4-desktopicon.sh (デスクトップショートカット)
 MOZC_SETUP_URL = "https://raw.githubusercontent.com/hirogura/scripts/main/cachyos-mozcjp.sh"
+DDRESCUEGUI_INSTALL_URL = "https://raw.githubusercontent.com/hirogura/ddrescuegui/main/install.sh"
 
-APP_INSTALL_KEYS = ("japanese", "chrome", "thunderbird", "libreoffice", "vlc", "ssh", "rdp")
+APP_INSTALL_KEYS = ("japanese", "chrome", "thunderbird", "libreoffice", "vlc", "ssh", "rdp", "ddrescuegui")
 
 APP_LABELS = {
     "japanese": "日本語入力",
@@ -3387,6 +3388,7 @@ APP_LABELS = {
     "vlc": "VLC",
     "ssh": "SSH",
     "rdp": "リモートデスクトップ",
+    "ddrescuegui": "ddrescueGUI",
 }
 
 
@@ -3432,6 +3434,13 @@ async def _check_app_status() -> dict:
     q_krdp = await run_cmd("pacman -Q krdp 2>/dev/null", timeout=10)
     status["rdp"] = {"installed": q_krdp["returncode"] == 0,
                      "detail": q_krdp["stdout"].strip().splitlines()[0] if q_krdp["returncode"] == 0 and q_krdp["stdout"].strip() else ""}
+
+    # ddrescueGUI は systemd サービス + /opt/ddrescuegui で導入状態を判定する
+    svc_ddrescue = await run_cmd("systemctl is-enabled ddrescuegui 2>/dev/null", timeout=5)
+    dir_ddrescue = await run_cmd("test -d /opt/ddrescuegui", timeout=5)
+    ddrescue_on = svc_ddrescue["returncode"] == 0 or dir_ddrescue["returncode"] == 0
+    status["ddrescuegui"] = {"installed": ddrescue_on,
+                             "detail": "ddrescuegui.service" if ddrescue_on else ""}
     return status
 
 
@@ -3491,6 +3500,13 @@ async def _install_single_app(key: str) -> dict:
         return {"success": ok, "output": "\n".join(logs)[-3000:]}
     elif key == "rdp":
         ok = await _step(_sudo("pacman -S --noconfirm --needed krdp"), timeout=900)
+        return {"success": ok, "output": "\n".join(logs)[-3000:]}
+    elif key == "ddrescuegui":
+        # ddrescueGUI は install.sh が依存導入・git clone・systemd 登録・Tailscale Serve まで行う
+        ok = await _step(
+            _sudo(f"bash -c {shlex.quote(f'curl -fsSL {DDRESCUEGUI_INSTALL_URL} -o /tmp/ddrescuegui-install.sh && bash /tmp/ddrescuegui-install.sh')}"),
+            timeout=900,
+        )
         return {"success": ok, "output": "\n".join(logs)[-3000:]}
     return {"success": False, "output": "不明なアプリ指定です"}
 

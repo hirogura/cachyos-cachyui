@@ -2874,6 +2874,7 @@ const APPS_INSTALL_DEFS = [
   { key: 'vlc', label: 'VLC', desc: 'vlc メディアプレイヤー' },
   { key: 'ssh', label: 'SSH', desc: 'sshd を有効化・起動し ufw で ssh を許可' },
   { key: 'rdp', label: 'リモートデスクトップ', desc: 'krdp (KDE リモートデスクトップ)' },
+  { key: 'ddrescuegui', label: 'ddrescueGUI', desc: 'ddrescue を Web-UI から操作 (:3327)' },
 ];
 
 async function loadAppsPage() {

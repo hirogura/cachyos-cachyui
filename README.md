@@ -32,7 +32,7 @@ Webベースの CachyOS 管理ツール。Tailscale内のHTTPS経由でアクセ
 | selfcode / Easy LXD / VM Manager | 連携アプリの導入と起動。未インストールの場合は確認ダイアログ表示後にターミナルでインストール、インストール済みならサイトを新しいタブで開く |
 | バックアップ/復元 | /iso 内の Clonezilla Live ISO からカーネルを取り出して Limine 起動する無人パーティションバックアップ・復元 (cachyos-clonezilla-auto 方式) |
 | Snapper | snapper スナップショットの一覧・作成・復元 (rollback)・削除 |
-| アプリ | よく使うアプリ (日本語入力・Chrome・Thunderbird・LibreOffice・VLC・SSH・リモートデスクトップ) のチェック式一括インストールとデスクトップショートカット作成 (cachyos-scripts の 3-soft.sh / 4-desktopicon.sh と同じ内容) |
+| アプリ | よく使うアプリ (日本語入力・Chrome・Thunderbird・LibreOffice・VLC・SSH・リモートデスクトップ・ddrescueGUI) のチェック式一括インストールとデスクトップショートカット作成 (cachyos-scripts の 3-soft.sh / 4-desktopicon.sh と同じ内容 + ddrescueGUI) |
 | cachy-UI一括管理 | Tailnet内で稼働中のcachy-UIを自動検出して一覧表示。ピン留めしたサーバーをページ上部に固定表示し、ホスト名クリックで新しいタブで開く |
 | システム操作 | cachy-UIの再起動・アップデート、PC本体の再起動・シャットダウン |
 
@@ -60,7 +60,7 @@ Webベースの CachyOS 管理ツール。Tailscale内のHTTPS経由でアクセ
 
 [cachyos-scripts](https://github.com/hirogura/cachyos-scripts.git) と同じ内容です。
 
-- **アプリのインストール**: [3-soft.sh](https://github.com/hirogura/cachyos-scripts.git) を参考に、日本語入力 (fcitx5 + Mozc の [cachyos-mozcjp.sh](https://github.com/hirogura/scripts/main/cachyos-mozcjp.sh) を実行)・Google Chrome (`paru` 経由)・Thunderbird・LibreOffice・VLC・SSH (`sshd` 有効化 + `ufw allow ssh`)・リモートデスクトップ (`krdp`) をチェック式で一括インストールします。
+- **アプリのインストール**: [3-soft.sh](https://github.com/hirogura/cachyos-scripts.git) を参考に、日本語入力 (fcitx5 + Mozc の [cachyos-mozcjp.sh](https://github.com/hirogura/scripts/main/cachyos-mozcjp.sh) を実行)・Google Chrome (`paru` 経由)・Thunderbird・LibreOffice・VLC・SSH (`sshd` 有効化 + `ufw allow ssh`)・リモートデスクトップ (`krdp`)・[ddrescueGUI](https://github.com/hirogura/ddrescuegui.git) (`install.sh` を実行) をチェック式で一括インストールします。
 - **デスクトップショートカット**: [4-desktopicon.sh](https://github.com/hirogura/cachyos-scripts.git) を参考に、Chrome / Thunderbird / LibreOffice (Calc・Writer・Impress) / VLC / Dolphin / KDEシステム設定 / Konsole / KWrite / システムモニタ / アップデート (`pacman -Syu`) のショートカットをチェック式でデスクトップに作成します。
 
 ### 連携アプリ
