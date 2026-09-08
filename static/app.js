@@ -2329,6 +2329,35 @@ async function openVMManager() {
   }
 }
 
+// --- ddrescueGUI ---
+async function openDdrescueGui() {
+  try {
+    const resp = await fetch('/api/ddrescuegui/status');
+    const data = await resp.json();
+
+    if (data.installed && data.url) {
+      window.open(data.url, '_blank');
+    } else if (data.installed) {
+      switchTab('terminal');
+      showStatus('ddrescueGUIはインストール済みです。URLを取得できませんでした。', 'info');
+    } else {
+      if (!confirm('ddrescueGUIはまだインストールされていません。\nインストールしますか？')) return;
+      switchTab('terminal');
+      showStatus('ddrescueGUIをインストール中... ターミナルで進捗を確認できます。', 'info');
+      setTimeout(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          const installCmd = 'sudo rm -rf /tmp/ddrescuegui && cd /tmp && sudo git clone https://github.com/hirogura/ddrescuegui.git && cd ddrescuegui && sudo bash install.sh\n';
+          ws.send(JSON.stringify({ type: 'input', data: installCmd }));
+        } else {
+          showStatus('ターミナルに接続できません', 'error');
+        }
+      }, 500);
+    }
+  } catch (e) {
+    showStatus(`ddrescueGUI確認エラー: ${e.message}`, 'error');
+  }
+}
+
 // --- Backup / Restore ---
 let backupStatusData = null;
 
@@ -2874,7 +2903,6 @@ const APPS_INSTALL_DEFS = [
   { key: 'vlc', label: 'VLC', desc: 'vlc メディアプレイヤー' },
   { key: 'ssh', label: 'SSH', desc: 'sshd を有効化・起動し ufw で ssh を許可' },
   { key: 'rdp', label: 'リモートデスクトップ', desc: 'krdp (KDE リモートデスクトップ)' },
-  { key: 'ddrescuegui', label: 'ddrescueGUI', desc: 'ddrescue を Web-UI から操作 (:3327)' },
 ];
 
 async function loadAppsPage() {

@@ -306,10 +306,15 @@
     <section id="tab-disks" class="tab-content">
       <div class="terminal-header">
         <h1>ディスク情報</h1>
-        <button class="btn btn-primary" onclick="loadDisks()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
-          ディスク情報更新
-        </button>
+        <div class="btn-group">
+          <button class="btn btn-secondary" onclick="openDdrescueGui()">
+            ddrescueGUI
+          </button>
+          <button class="btn btn-primary" onclick="loadDisks()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+            ディスク情報更新
+          </button>
+        </div>
       </div>
       <div id="disk-status-msg" class="status-msg"></div>
       <div id="disks-container">
@@ -761,7 +766,7 @@
 
       <h2>アプリのインストール</h2>
       <div class="stat-card" style="margin-bottom:1rem;">
-        <p class="muted" style="margin-bottom:0.75rem;">インストールしたいアプリにチェックを入れて「インストール」を押してください（<a href="https://github.com/hirogura/cachyos-scripts.git" target="_blank" rel="noopener noreferrer">cachyos-scripts</a> の 3-soft.sh と同じ内容 + <a href="https://github.com/hirogura/ddrescuegui.git" target="_blank" rel="noopener noreferrer">ddrescueGUI</a>）。Google Chrome のビルドなど時間がかかる場合があります。</p>
+        <p class="muted" style="margin-bottom:0.75rem;">インストールしたいアプリにチェックを入れて「インストール」を押してください（<a href="https://github.com/hirogura/cachyos-scripts.git" target="_blank" rel="noopener noreferrer">cachyos-scripts</a> の 3-soft.sh と同じ内容）。Google Chrome のビルドなど時間がかかる場合があります。</p>
         <div id="apps-install-list"></div>
         <div id="apps-install-status" class="status-msg"></div>
         <div style="display:flex;justify-content:flex-end;margin-top:0.5rem;">
