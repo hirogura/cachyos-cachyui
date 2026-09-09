@@ -2291,7 +2291,7 @@ async function openEasyLXD() {
       showStatus('Easy LXDをインストール中...', 'info');
       setTimeout(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
-          const installCmd = 'curl -fsSL -o /tmp/install-easylxd1-cachyos.sh https://raw.githubusercontent.com/hirogura/cachyos-easylxd/main/install-easylxd1-cachyos.sh && chmod +x /tmp/install-easylxd1-cachyos.sh && sudo /tmp/install-easylxd1-cachyos.sh\n';
+          const installCmd = 'curl -fsSL -o /tmp/install-easylxd1.sh https://raw.githubusercontent.com/hirogura/easylxd/main/install-easylxd1.sh && chmod +x /tmp/install-easylxd1.sh && sudo /tmp/install-easylxd1.sh\n';
           ws.send(JSON.stringify({ type: 'input', data: installCmd }));
         } else {
           showStatus('ターミナルに接続できません', 'error');
@@ -2317,7 +2317,7 @@ async function openVMManager() {
       showStatus('VM Managerをインストール中...', 'info');
       setTimeout(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
-          const installCmd = 'curl -fsSL -o /tmp/install-vmmanager-cachyos.sh https://raw.githubusercontent.com/hirogura/vmmanager-cachyos/main/install-vmmanager-cachyos.sh && chmod +x /tmp/install-vmmanager-cachyos.sh && sudo /tmp/install-vmmanager-cachyos.sh\n';
+          const installCmd = 'curl -fsSL -o /tmp/install-vmmanager.sh https://raw.githubusercontent.com/hirogura/vmmanager/main/install-vmmanager.sh && chmod +x /tmp/install-vmmanager.sh && sudo /tmp/install-vmmanager.sh\n';
           ws.send(JSON.stringify({ type: 'input', data: installCmd }));
         } else {
           showStatus('ターミナルに接続できません', 'error');

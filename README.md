@@ -14,7 +14,7 @@ Webベースの CachyOS 管理ツール。Tailscale内のHTTPS経由でアクセ
 | ISOダウンロード | Ubuntu ISO一覧 + 汎用URL | CachyOS ISO一覧 (build.cachyos.org ミラー) + 汎用URL |
 | バックアップ/復元 | GRUBループバック + `grub-reboot` による次回1回起動 | cachyos-clonezilla-auto 方式 (Limine サブエントリ Clonezilla-AutoBackup/Restore + default_entry 操作。toram 必須) |
 | Timeshift | あり (rsync/btrfs) | なし (snapper があるため当面外す) |
-| 連携アプリ導入先 | Ubuntu版リポジトリ | Ubuntu/CachyOS共通リポジトリ (selfcode)・CachyOS版リポジトリ (cachyos-easylxd / vmmanager-cachyos) |
+| 連携アプリ導入先 | Ubuntu版リポジトリ | Ubuntu/CachyOS共通リポジトリ (selfcode / easylxd / vmmanager) |
 | インストール先 | `/opt/servui` / `servui` ユーザー / `servui.service` | `/opt/cachy-ui` / `cachyui` ユーザー / `cachyui.service` |
 | ポート | 3355 | 3355 (同じ) |
 
@@ -66,8 +66,8 @@ Webベースの CachyOS 管理ツール。Tailscale内のHTTPS経由でアクセ
 ### 連携アプリ
 
 - [selfcode (Ubuntu/CachyOS共通)](https://github.com/hirogura/selfcode.git) — `/opt/lxd-data/selfcode`, `:3339`
-- [Easy LXD (CachyOS版)](https://github.com/hirogura/cachyos-easylxd.git) — `/opt/easy-lxd`, `:3329`
-- [vmmanager (CachyOS版)](https://github.com/hirogura/vmmanager-cachyos.git) — `/opt/vm-manage`, `:8090`
+- [Easy LXD (Ubuntu/CachyOS共通)](https://github.com/hirogura/easylxd.git) — `/opt/easy-lxd`, `:3329`
+- [vmmanager (Ubuntu/CachyOS共通)](https://github.com/hirogura/vmmanager.git) — `/opt/vm-manage`, `:8090`
 
 ## インストール
 
