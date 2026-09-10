@@ -174,7 +174,10 @@ if [[ -d "$APP_DIR/.git" ]]; then
 else
   git clone --depth 1 -b "$BRANCH" "$REPO_URL" "$TEMP_DIR"
   mkdir -p "$APP_DIR"
-  cp -r "$TEMP_DIR/"* "$APP_DIR/"
+  # ドットファイルも含めてコピーし、.gitもデプロイする (/opt/cachy-ui自体がgitリポジトリになる)。
+  # 新しい環境でここをワークスペースとして開いても git init 不要にするため。
+  # TEMP_DIRはEXITトラップで削除される。
+  cp -a "$TEMP_DIR/." "$APP_DIR/"
 fi
 
 # --- Python venv ---
