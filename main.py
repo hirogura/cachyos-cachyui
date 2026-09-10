@@ -3376,10 +3376,16 @@ async def snapper_delete(req: Request):
 
 @app.post("/api/snapper/restore")
 async def snapper_restore(req: Request):
-    """スナップショットから復元 (snapper rollback) する。"""
+    """スナップショットから復元する (Btrfs Assistant 方式が主、失敗時は snapper rollback にフォールバック)。"""
     data = await req.json()
     cfg = _validate_snapper_config(data.get("config", "root"))
     number = _validate_snapshot_number(data.get("number"))
+    # Btrfs Assistant と同じ動作: top-level にマウントして rename + btrfs snapshot で置換する。
+    # snapper rollback は ambit/既定サブボリューム未設定等で失敗する (`--ambit` エラー) ため先にこちらを試す。
+    manual = await _snapper_assistant_restore(cfg, number)
+    if manual is not None:
+        return manual
+    # 手動復元の前提が揃わない場合は従来の snapper rollback を試す
     r = await run_cmd(_sudo(f"snapper -c {shlex.quote(cfg)} rollback {number}"), timeout=180)
     if r["returncode"] != 0:
         err = (r["stderr"] or r["stdout"]).strip()
@@ -3389,6 +3395,286 @@ async def snapper_restore(req: Request):
     if out:
         msg += f"\n{out}"
     return {"success": True, "message": msg}
+
+
+def _parse_btrfs_subvolume_list(stdout: str) -> tuple[dict[int, str], dict[int, int]]:
+    """`btrfs subvolume list [-p]` の出力をパースする。戻り値は (id->path, id->parent)。"""
+    id_to_path: dict[int, str] = {}
+    id_to_parent: dict[int, int] = {}
+    for line in (stdout or "").splitlines():
+        m = re.match(r"^ID\s+(\d+).*?parent\s+(\d+).*?path\s+(.+?)\s*$", line.strip())
+        if not m:
+            # -p 無し等の旧形式フォールバック: ID ... path ...
+            m2 = re.match(r"^ID\s+(\d+).*?path\s+(.+?)\s*$", line.strip())
+            if not m2:
+                continue
+            try:
+                id_to_path[int(m2.group(1))] = m2.group(2).strip()
+            except ValueError:
+                continue
+            continue
+        try:
+            sid, parent, path = int(m.group(1)), int(m.group(2)), m.group(3).strip()
+        except ValueError:
+            continue
+        id_to_path[sid] = path
+        id_to_parent[sid] = parent
+    return id_to_path, id_to_parent
+
+
+def _is_snapper_snapshot_path(path: str) -> bool:
+    """Btrfs Assistant の isSnapper と同等: `.../<数字>/snapshot` で終わるか。"""
+    return re.search(r"/[0-9]+/snapshot$", path or "") is not None
+
+
+def _snapper_snapshot_prefix(path: str) -> str | None:
+    """`@/.snapshots/45/snapshot` -> `@/.snapshots`。`.snapshots` 直下の場合は `.snapshots`。"""
+    m = re.match(r"^(.*)/[0-9]+/snapshot$", path or "")
+    if m:
+        return m.group(1)
+    if path == ".snapshots":
+        return ""
+    return None
+
+
+async def _btrfs_rootid(path: str) -> int | None:
+    """サブボリュームの ID を返す。`btrfs inspect-internal rootid` が無ければ `subvolume show` で代用。"""
+    r = await run_cmd(_sudo(f"btrfs inspect-internal rootid {shlex.quote(path)} 2>/dev/null"), timeout=10)
+    if r["returncode"] == 0:
+        m = re.search(r"(\d+)", r["stdout"] or "")
+        if m:
+            try:
+                return int(m.group(1))
+            except ValueError:
+                pass
+    r2 = await run_cmd(_sudo(f"btrfs subvolume show {shlex.quote(path)} 2>/dev/null"), timeout=10)
+    if r2["returncode"] == 0:
+        for key in ("Subvolume ID:", "subvol id:", "ID:"):
+            m = re.search(rf"{re.escape(key)}\s*(\d+)", r2["stdout"] or "")
+            if m:
+                try:
+                    return int(m.group(1))
+                except ValueError:
+                    pass
+    return None
+
+
+async def _snapper_get_subvolume(cfg: str) -> str:
+    """snapper 設定の SUBVOLUME を返す (既定は /)。"""
+    r = await run_cmd(_sudo(f"snapper -c {shlex.quote(cfg)} get-config 2>/dev/null"), timeout=10)
+    for line in (r["stdout"] or "").splitlines():
+        cols = [c.strip() for c in line.split(",")]
+        if len(cols) >= 2 and cols[0] == "SUBVOLUME" and cols[1]:
+            return cols[1]
+    # list-configs から補完
+    for c in await _snapper_list_configs():
+        if c.get("config") == cfg and c.get("subvolume"):
+            return c["subvolume"]
+    return "/"
+
+
+async def _snapper_assistant_restore(cfg: str, number: int) -> dict | None:
+    """Btrfs Assistant の restoreSubvol と同じ手順で復元する。
+
+    成功・失敗確定時は結果 dict を返し、前提が揃わず snapper rollback に
+    譲るべき場合のみ None を返す。
+    """
+    subvol_abs = await _snapper_get_subvolume(cfg) or "/"
+    # スナップショット実体の候補 (標準レイアウト: <SUBVOLUME>/.snapshots/<N>/snapshot)
+    candidates = [os.path.join(subvol_abs, ".snapshots", str(number), "snapshot")]
+    if subvol_abs != "/":
+        candidates.append(f"/.snapshots/{number}/snapshot")
+    snap_abs = None
+    for c in candidates:
+        t = await run_cmd(_sudo(f"test -d {shlex.quote(c)}"), timeout=5)
+        if t["returncode"] == 0:
+            snap_abs = c
+            break
+    if snap_abs is None:
+        return None
+    sv = await run_cmd(_sudo(f"btrfs subvolume show {shlex.quote(snap_abs)} 2>/dev/null"), timeout=10)
+    if sv["returncode"] != 0:
+        return None
+
+    # ファイルシステム UUID とデバイスを特定
+    uuid = ""
+    for target in (subvol_abs, snap_abs, "/"):
+        u = await run_cmd(f"findmnt -no UUID -T {shlex.quote(target)} 2>/dev/null", timeout=5)
+        if u["returncode"] == 0 and u["stdout"].strip():
+            uuid = u["stdout"].strip().splitlines()[0].strip()
+            break
+    if not uuid:
+        return None
+    device = ""
+    for target in (subvol_abs, snap_abs, "/"):
+        d = await run_cmd(f"findmnt -no SOURCE -T {shlex.quote(target)} 2>/dev/null", timeout=5)
+        if d["returncode"] == 0 and d["stdout"].strip():
+            device = d["stdout"].strip().splitlines()[0].strip()
+            break
+    if not device:
+        return None
+    device = re.sub(r"\[.*\]$", "", device).strip()
+    if not device:
+        return None
+
+    # top-level (subvolid=5) のマウント点を探す。無ければ一時マウントする。
+    # 注意: / 等の通常マウント点 (@) を top-level と誤認するとパス計算が崩れるため、
+    # subvolid=5 でマウントされている場合のみ再利用する。
+    tmp_root = ""
+    mounted_by_us = False
+    tmp_dir = ""
+    fm = await run_cmd("findmnt -rn -t btrfs -o UUID,TARGET,OPTIONS 2>/dev/null", timeout=5)
+    if fm["returncode"] == 0:
+        for line in fm["stdout"].splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            # UUID に空白は含まれないため先頭2カラムで判定し、残りをオプションとみなす
+            parts = line.split(None, 2)
+            if len(parts) >= 2 and parts[0] == uuid:
+                cand, opts = parts[1], (parts[2] if len(parts) > 2 else "")
+                if "subvolid=5" in opts:
+                    tmp_root = cand
+                    break
+    if not tmp_root:
+        fm5 = await run_cmd("findmnt -rn -O subvolid=5 -o UUID,TARGET 2>/dev/null", timeout=5)
+        if fm5["returncode"] == 0:
+            for line in fm5["stdout"].splitlines():
+                parts = line.strip().split()
+                if len(parts) >= 2 and parts[0] == uuid:
+                    tmp_root = parts[1].strip()
+                    break
+    if not tmp_root:
+        try:
+            tmp_dir = tempfile.mkdtemp(prefix="cachyui-btrfs-root-")
+        except Exception as e:
+            return {"success": False, "message": f"スナップショット #{number} への復元に失敗しました: 一時ディレクトリを作成できません: {e}"}
+        m = await run_cmd(_sudo(f"mount -t btrfs -o subvolid=5 {shlex.quote(device)} {shlex.quote(tmp_dir)}"), timeout=30)
+        if m["returncode"] != 0:
+            err = ((m["stderr"] or "") + (m["stdout"] or "")).strip()
+            try:
+                os.rmdir(tmp_dir)
+            except OSError:
+                pass
+            # マウントできなければ snapper rollback に譲らずエラーにする (ambit エラーの代替手段がないため)
+            return {"success": False, "message": f"スナップショット #{number} への復元に失敗しました: btrfs の top-level をマウントできません: {err}"}
+        tmp_root = tmp_dir
+        mounted_by_us = True
+
+    async def _cleanup():
+        if mounted_by_us and tmp_root:
+            await run_cmd(_sudo(f"umount {shlex.quote(tmp_root)}"), timeout=30)
+            try:
+                os.rmdir(tmp_root)
+            except OSError:
+                pass
+
+    try:
+        target_id = await _btrfs_rootid(subvol_abs)
+        source_id = await _btrfs_rootid(snap_abs)
+        if not target_id or not source_id:
+            await _cleanup()
+            return None
+        if target_id == 5:
+            await _cleanup()
+            return {"success": False, "message": f"スナップショット #{number} への復元に失敗しました: パーティション直下には復元できません"}
+
+        lst = await run_cmd(_sudo(f"btrfs subvolume list -p {shlex.quote(tmp_root)} 2>/dev/null"), timeout=30)
+        if lst["returncode"] != 0:
+            lst = await run_cmd(_sudo(f"btrfs subvolume list {shlex.quote(tmp_root)} 2>/dev/null"), timeout=30)
+        if lst["returncode"] != 0:
+            await _cleanup()
+            return None
+        id_to_path, id_to_parent = _parse_btrfs_subvolume_list(lst["stdout"])
+        target_name = id_to_path.get(target_id, "")
+        source_name = id_to_path.get(source_id, "")
+        if not target_name:
+            # findmnt の subvol= オプションから補完 (例: rootflags=subvol=@)
+            fo = await run_cmd(f"findmnt -no OPTIONS -T {shlex.quote(subvol_abs)} 2>/dev/null", timeout=5)
+            m = re.search(r"subvol=([^, ]+)", fo["stdout"] or "")
+            if m:
+                target_name = m.group(1).strip().lstrip("/")
+        if not target_name or not source_name:
+            await _cleanup()
+            return None
+        if not _is_snapper_snapshot_path(source_name):
+            await _cleanup()
+            return None
+
+        # 復元対象の子サブボリューム (Btrfs::children と同じく直接の子のみ)
+        children = [p for sid, p in id_to_path.items() if id_to_parent.get(sid) == target_id]
+
+        # バックアップ名 (Btrfs Assistant と同じ形式: <target>_backup_<UTC時刻>)
+        stamp = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+        backup_name = f"{target_name}_backup_{stamp}"
+        src_top = os.path.join(tmp_root, target_name)
+        dst_top = os.path.join(tmp_root, backup_name)
+        # ネスト対策: 親ディレクトリが無ければ作成 (例: @home 等の直下配置)
+        parent_dir = os.path.dirname(dst_top)
+        await run_cmd(_sudo(f"mkdir -p {shlex.quote(parent_dir)}"), timeout=10)
+
+        mv1 = await run_cmd(_sudo(f"mv -T {shlex.quote(src_top)} {shlex.quote(dst_top)}"), timeout=120)
+        if mv1["returncode"] != 0:
+            err = ((mv1["stderr"] or "") + (mv1["stdout"] or "")).strip()
+            await _cleanup()
+            return {"success": False, "message": f"スナップショット #{number} への復元に失敗しました: 現行ボリュームの退避に失敗しました: {err}"}
+
+        # source が target 配下の場合は退避後のパスに読み替える
+        if source_name == target_name or source_name.startswith(target_name.rstrip("/") + "/"):
+            new_source = backup_name + source_name[len(target_name):]
+        else:
+            new_source = source_name
+        snap_src = os.path.join(tmp_root, new_source)
+        snap_dst = os.path.join(tmp_root, target_name)
+        sn = await run_cmd(_sudo(f"btrfs subvolume snapshot {shlex.quote(snap_src)} {shlex.quote(snap_dst)}"), timeout=180)
+        if sn["returncode"] != 0:
+            err = ((sn["stderr"] or "") + (sn["stdout"] or "")).strip()
+            # 元に戻す
+            await run_cmd(_sudo(f"mv -T {shlex.quote(dst_top)} {shlex.quote(src_top)}"), timeout=120)
+            await _cleanup()
+            return {"success": False, "message": f"スナップショット #{number} への復元に失敗しました: スナップショットのコピーに失敗しました: {err}"}
+
+        # 子サブボリュームを新ボリュームへ移行 (.snapshots 等)
+        child_warnings: list[str] = []
+        prefix = target_name.rstrip("/") + "/"
+        for child in children:
+            if not child.startswith(prefix):
+                continue
+            rel = child[len(prefix):]
+            old_path = os.path.join(tmp_root, backup_name, rel)
+            new_path = os.path.join(tmp_root, child)
+            ex = await run_cmd(_sudo(f"test -e {shlex.quote(old_path)}"), timeout=5)
+            if ex["returncode"] != 0:
+                continue
+            # 新側にある空スタブを除去 (サブボリュームなら delete、ただの空ディレクトリなら rmdir)
+            is_sub = await run_cmd(_sudo(f"btrfs subvolume show {shlex.quote(new_path)} 2>/dev/null"), timeout=10)
+            if is_sub["returncode"] == 0:
+                await run_cmd(_sudo(f"btrfs subvolume delete {shlex.quote(new_path)}"), timeout=60)
+            else:
+                await run_cmd(_sudo(f"rmdir {shlex.quote(new_path)} 2>/dev/null"), timeout=10)
+            mv = await run_cmd(_sudo(f"mv -T {shlex.quote(old_path)} {shlex.quote(new_path)}"), timeout=120)
+            if mv["returncode"] != 0:
+                err = ((mv["stderr"] or "") + (mv["stdout"] or "")).strip()
+                child_warnings.append(f"{rel}: {err}")
+
+        fstab_warn = ""
+        fb = await run_cmd("grep -E 'subvolid=' /etc/fstab 2>/dev/null", timeout=5)
+        if fb["returncode"] == 0 and (fb["stdout"] or "").strip():
+            fstab_warn = "\n注意: /etc/fstab で subvolid 指定のマウントが検出されました。subvol=@ 等のパス指定に切替えていないと次回起動時に復元が反映されない場合があります。"
+
+        await _cleanup()
+        msg = (f"スナップショット #{number} を復元しました (Btrfs Assistant 方式)。\n"
+               f"元のボリュームは {backup_name} として保存されています。\n"
+               f"変更を反映するには直ちに再起動してください。{fstab_warn}")
+        if child_warnings:
+            msg += "\n警告: 一部のネストされたサブボリュームの移行に失敗しました (手動で移行してください):\n" + "\n".join(child_warnings)
+        return {"success": True, "message": msg}
+    except Exception as e:
+        try:
+            await _cleanup()
+        except Exception:
+            pass
+        return {"success": False, "message": f"スナップショット #{number} への復元に失敗しました: {e}"}
 
 
 # ============================================================
