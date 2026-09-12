@@ -10,13 +10,18 @@ let selectedWifiNetwork = null;
 let pendingTerminalCwd = null;
 
 // --- Tab Navigation ---
+// 外部ツールタブ (servEX/selfcode/EasyLXD/VM Manager) は別ページを開くだけで
+// 対応する tab-xxx セクションが存在しないため、汎用リスナー・switchTabから除外する。
+const EXTERNAL_TABS = new Set(['servex', 'selfcode', 'easylxd', 'vmmanager']);
 document.querySelectorAll('.nav-links li').forEach(li => {
   li.addEventListener('click', () => {
+    if (EXTERNAL_TABS.has(li.dataset.tab)) return;
     switchTab(li.dataset.tab);
   });
 });
 
 function switchTab(tab) {
+  if (EXTERNAL_TABS.has(tab)) return;
   currentTab = tab;
   document.querySelectorAll('.nav-links li').forEach(l => l.classList.toggle('active', l.dataset.tab === tab));
   document.querySelectorAll('.tab-content').forEach(t => t.classList.toggle('active', t.id === `tab-${tab}`));
@@ -161,7 +166,11 @@ async function shutdownSystem() {
 async function loadDashboard() {
   try {
     const resp = await fetch('/api/system/info');
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
+    if (!data || !data.cpu || !data.memory || !data.disk) {
+      throw new Error('ダッシュボードの応答が不正です');
+    }
 
     // サイドバーのホスト名表示
     const hostEl = document.getElementById('sidebar-hostname');
@@ -344,17 +353,18 @@ function renderServices(services) {
   tbody.innerHTML = services.map(s => {
     const badgeClass = s.active === 'active' ? 'badge-active' :
                        s.active === 'inactive' ? 'badge-inactive' : 'badge-other';
+    const name = String(s.name || '');
     return `
       <tr>
-        <td>${escapeHtml(s.name.replace('.service', ''))}</td>
-        <td><span class="badge ${badgeClass}">${s.active}</span></td>
-        <td>${s.sub}</td>
+        <td>${escapeHtml(name.replace('.service', ''))}</td>
+        <td><span class="badge ${badgeClass}">${escapeHtml(s.active)}</span></td>
+        <td>${escapeHtml(s.sub)}</td>
         <td>
           <div class="btn-group">
-            <button class="btn btn-sm btn-success" onclick="serviceAction('${s.name}','start')" title="開始"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg></button>
-            <button class="btn btn-sm btn-danger" onclick="serviceAction('${s.name}','stop')" title="停止"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg></button>
-            <button class="btn btn-sm btn-primary" onclick="serviceAction('${s.name}','restart')" title="再起動"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg></button>
-            <button class="btn btn-sm btn-secondary" onclick="serviceDetail('${s.name}')" title="詳細"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg></button>
+            <button class="btn btn-sm btn-success" onclick="serviceAction('${escapeJs(name)}','start')" title="開始"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg></button>
+            <button class="btn btn-sm btn-danger" onclick="serviceAction('${escapeJs(name)}','stop')" title="停止"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg></button>
+            <button class="btn btn-sm btn-primary" onclick="serviceAction('${escapeJs(name)}','restart')" title="再起動"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg></button>
+            <button class="btn btn-sm btn-secondary" onclick="serviceDetail('${escapeJs(name)}')" title="詳細"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg></button>
           </div>
         </td>
       </tr>
@@ -363,6 +373,7 @@ function renderServices(services) {
 }
 
 function filterServices() {
+  if (!Array.isArray(window._allServices)) return;
   const q = document.getElementById('service-search').value.toLowerCase();
   const filtered = window._allServices.filter(s =>
     s.name.toLowerCase().includes(q)
@@ -429,7 +440,7 @@ async function checkUpdates() {
       container.innerHTML = data.packages.map(p => `
         <div class="package-item">
           <span>${escapeHtml(p.name)}</span>
-          <button class="btn btn-sm btn-primary" onclick="upgradePackage('${escapeHtml(p.name)}')">更新</button>
+          <button class="btn btn-sm btn-primary" onclick="upgradePackage('${escapeJs(p.name)}')">更新</button>
         </div>
       `).join('');
     }
@@ -655,9 +666,13 @@ function connectTerminal() {
     }
   });
 
-  window.addEventListener('resize', () => {
-    if (fitAddon) fitAddon.fit();
-  });
+  // connectTerminal() の呼び出し毎に window リスナが蓄積しないよう1回のみ登録する。
+  if (!window._cachyTermResizeBound) {
+    window._cachyTermResizeBound = true;
+    window.addEventListener('resize', () => {
+      if (fitAddon) fitAddon.fit();
+    });
+  }
 }
 
 // --- Wi-Fi ---
@@ -751,6 +766,9 @@ async function scanWifi() {
             const safeSSID = escapeHtml(net.ssid);
             const safeBSSID = escapeHtml(net.bssid || '');
             const safeSec = escapeHtml(net.security);
+            const jsSSID = escapeJs(net.ssid);
+            const jsBSSID = escapeJs(net.bssid || '');
+            const jsSec = escapeJs(net.security);
             const freqStr = net.freq ? `${net.freq} (${net.chan || '-'})` : (net.chan || '-');
 
             let sigClass = 'signal-good';
@@ -778,9 +796,9 @@ async function scanWifi() {
                 </td>
                 <td>
                   ${isConnected ? `
-                    <button class="btn btn-sm btn-danger" onclick="disconnectWifi('${safeSSID}')">切断</button>
+                    <button class="btn btn-sm btn-danger" onclick="disconnectWifi('${jsSSID}')">切断</button>
                   ` : `
-                    <button class="btn btn-sm btn-primary" onclick="openWifiConnect('${safeSSID}', '${safeSec}', '${safeBSSID}')">接続</button>
+                    <button class="btn btn-sm btn-primary" onclick="openWifiConnect('${jsSSID}', '${jsSec}', '${jsBSSID}')">接続</button>
                   `}
                 </td>
               </tr>
@@ -1091,29 +1109,35 @@ function renderLvmInfo(dev) {
     const color = lvColors[i % lvColors.length];
     const mountLabel = lv.mountpoint ? `<span class="disk-layout-legend-mount"> → ${escapeHtml(lv.mountpoint)}</span>` : '';
     const safeLvPath = escapeHtml(lv.path || `${vgName}-${lv.name}`.replace(/-/g, '--'));
+    const jsLvPath = escapeJs(lv.path || `${vgName}-${lv.name}`.replace(/-/g, '--'));
+    const jsLvMp = escapeJs(lv.mountpoint || '');
+    const jsVg = escapeJs(vgName);
+    const jsLvName = escapeJs(lv.name);
+    const jsLvSize = escapeJs(lv.size);
+    const jsVgFree = escapeJs(vgFree);
     let lvBtns = '';
     if (lv.mountpoint) {
-      lvBtns += `<button class="btn btn-sm btn-danger" onclick="unmountDisk('${safeLvPath}','${escapeHtml(lv.mountpoint)}')" title="アンマウント">
+      lvBtns += `<button class="btn btn-sm btn-danger" onclick="unmountDisk('${jsLvPath}','${jsLvMp}')" title="アンマウント">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="5" y1="12" x2="19" y2="12"/></svg>
       </button>`;
-      const lvMp = escapeHtml(lv.mountpoint);
-      lvBtns += `<button class="btn btn-sm btn-secondary" onclick="openTerminalAt('${lvMp}')" title="${lvMp} でターミナルを開く" style="margin-left:0.15rem;">ターミナルで開く</button>`;
-      lvBtns += `<button class="btn btn-sm btn-secondary" onclick="unmountDisk('${safeLvPath}','${lvMp}',true)" title="強制アンマウント（使用中でも切り離す）" style="margin-left:0.15rem;">
+      const lvMpTitle = escapeAttr(lv.mountpoint);
+      lvBtns += `<button class="btn btn-sm btn-secondary" onclick="openTerminalAt('${jsLvMp}')" title="${lvMpTitle} でターミナルを開く" style="margin-left:0.15rem;">ターミナルで開く</button>`;
+      lvBtns += `<button class="btn btn-sm btn-secondary" onclick="unmountDisk('${jsLvPath}','${jsLvMp}',true)" title="強制アンマウント（使用中でも切り離す）" style="margin-left:0.15rem;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="5" y1="12" x2="19" y2="12"/></svg>
       </button>`;
     } else {
       const mountDev = lv.path ? lv.path.replace('/dev/', '') : safeLvPath;
       const fsType = 'ext4';
-      lvBtns += `<button class="btn btn-sm btn-primary" onclick="openDiskMountModal('${escapeHtml(mountDev)}','${fsType}')" title="マウント">
+      lvBtns += `<button class="btn btn-sm btn-primary" onclick="openDiskMountModal('${escapeJs(mountDev)}','${fsType}')" title="マウント">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       </button>`;
     }
     if (vgFreeBytes > 0) {
-      lvBtns += `<button class="btn btn-sm btn-secondary" onclick="openLvResizeModal('${escapeHtml(vgName)}','${escapeHtml(lv.name)}','${escapeHtml(lv.size)}','${escapeHtml(vgFree)}')" title="VG空き領域で拡張" style="margin-left:0.15rem;">
+      lvBtns += `<button class="btn btn-sm btn-secondary" onclick="openLvResizeModal('${jsVg}','${jsLvName}','${jsLvSize}','${jsVgFree}')" title="VG空き領域で拡張" style="margin-left:0.15rem;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
       </button>`;
     }
-    lvBtns += `<button class="btn btn-sm btn-danger" onclick="deleteLv('${escapeHtml(vgName)}','${escapeHtml(lv.name)}')" title="論理ボリュームを削除" style="margin-left:0.15rem;">
+    lvBtns += `<button class="btn btn-sm btn-danger" onclick="deleteLv('${jsVg}','${jsLvName}')" title="論理ボリュームを削除" style="margin-left:0.15rem;">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
     </button>`;
     return `<div style="display:flex;align-items:center;justify-content:space-between;padding:0.35rem 0;border-bottom:1px solid var(--border);">
@@ -1128,7 +1152,7 @@ function renderLvmInfo(dev) {
   }).join('');
 
   const createLvBtn = vgFreeBytes > 0
-    ? `<button class="btn btn-sm btn-success" onclick="openLvCreateModal('${escapeHtml(vgName)}','${escapeHtml(vgFree)}')" title="論理ボリュームを作成" style="margin-top:0.4rem;">
+    ? `<button class="btn btn-sm btn-success" onclick="openLvCreateModal('${escapeJs(vgName)}','${escapeJs(vgFree)}')" title="論理ボリュームを作成" style="margin-top:0.4rem;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         LV 作成
       </button>`
@@ -1174,27 +1198,27 @@ function renderDiskDevice(dev, depth) {
   let actionBtn = '';
   const isLvmMember = dev.fstype === 'LVM2_member';
   if (isPart && dev.fstype && !dev.readonly && !isLvmMember) {
-    const safeName = escapeHtml(dev.name);
-    const safeMp = escapeHtml(dev.mountpoint || '');
-    const safeFs = escapeHtml(dev.fstype);
+    const jsName = escapeJs(dev.name);
+    const jsMp = escapeJs(dev.mountpoint || '');
+    const jsFs = escapeJs(dev.fstype);
     if (dev.mountpoint) {
-      actionBtn = `<button class="btn btn-sm btn-danger" onclick="unmountDisk('${safeName}','${safeMp}')" title="アンマウント">
+      actionBtn = `<button class="btn btn-sm btn-danger" onclick="unmountDisk('${jsName}','${jsMp}')" title="アンマウント">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="5" y1="12" x2="19" y2="12"/></svg>
         アンマウント
       </button>`;
-      actionBtn += `<button class="btn btn-sm btn-secondary" onclick="unmountDisk('${safeName}','${safeMp}',true)" title="強制アンマウント（使用中でも切り離す）" style="margin-left:0.25rem;">
+      actionBtn += `<button class="btn btn-sm btn-secondary" onclick="unmountDisk('${jsName}','${jsMp}',true)" title="強制アンマウント（使用中でも切り離す）" style="margin-left:0.25rem;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="5" y1="12" x2="19" y2="12"/></svg>
         強制アンマウント
       </button>`;
     } else {
-      actionBtn = `<button class="btn btn-sm btn-primary" onclick="openDiskMountModal('${safeName}','${safeFs}')" title="マウント">
+      actionBtn = `<button class="btn btn-sm btn-primary" onclick="openDiskMountModal('${jsName}','${jsFs}')" title="マウント">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         マウント
       </button>`;
     }
     if (dev.extendable) {
       const maxMb = Math.floor((dev.max_extend_bytes || 0) / (1024 * 1024));
-      actionBtn += `<button class="btn btn-sm btn-secondary" onclick="openDiskExtendModal('${safeName}',${dev.size_bytes || 0},${dev.max_extend_bytes || 0})" title="隣接空き領域で拡張" style="margin-left:0.25rem;">
+      actionBtn += `<button class="btn btn-sm btn-secondary" onclick="openDiskExtendModal('${jsName}',${Number(dev.size_bytes) || 0},${Number(dev.max_extend_bytes) || 0})" title="隣接空き領域で拡張" style="margin-left:0.25rem;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
         拡張
       </button>`;
@@ -1204,7 +1228,7 @@ function renderDiskDevice(dev, depth) {
   // Delete button for partitions
   let deleteBtn = '';
   if (isPart && !isLvmMember) {
-    deleteBtn = `<button class="btn btn-sm btn-danger" onclick="deletePartition('${escapeHtml(dev.name)}')" title="パーティションを削除" style="margin-left:0.25rem;">
+    deleteBtn = `<button class="btn btn-sm btn-danger" onclick="deletePartition('${escapeJs(dev.name)}')" title="パーティションを削除" style="margin-left:0.25rem;">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
     </button>`;
   }
@@ -1212,7 +1236,7 @@ function renderDiskDevice(dev, depth) {
   // Create button for disks with free space
   let createBtn = '';
   if (isDisk && dev.free_bytes > 0) {
-    createBtn = `<button class="btn btn-sm btn-success" onclick="openDiskCreateModal('${escapeHtml(dev.name)}',${dev.size_bytes || 0},${dev.free_bytes || 0})" title="空き領域にパーティションを作成">
+    createBtn = `<button class="btn btn-sm btn-success" onclick="openDiskCreateModal('${escapeJs(dev.name)}',${Number(dev.size_bytes) || 0},${Number(dev.free_bytes) || 0})" title="空き領域にパーティションを作成">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       作成
     </button>`;
@@ -1221,7 +1245,7 @@ function renderDiskDevice(dev, depth) {
   // Delete button for disks (wipe all partitions)
   let diskDeleteBtn = '';
   if (isDisk) {
-    diskDeleteBtn = `<button class="btn btn-sm btn-danger" onclick="wipeDisk('${escapeHtml(dev.name)}')" title="ディスクの全パーティションを削除" style="margin-left:0.25rem;">
+    diskDeleteBtn = `<button class="btn btn-sm btn-danger" onclick="wipeDisk('${escapeJs(dev.name)}')" title="ディスクの全パーティションを削除" style="margin-left:0.25rem;">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
     </button>`;
   }
@@ -1231,7 +1255,7 @@ function renderDiskDevice(dev, depth) {
   if (dev.size) infoRows += `<tr><td>サイズ</td><td>${escapeHtml(dev.size)}</td></tr>`;
   if (dev.mountpoint) {
     const mpSafe = escapeHtml(dev.mountpoint);
-    infoRows += `<tr><td>マウントポイント</td><td>${mpSafe} <button class="btn btn-sm btn-secondary" onclick="openTerminalAt('${mpSafe}')" title="${mpSafe} でターミナルを開く" style="margin-left:0.4rem;">ターミナルで開く</button></td></tr>`;
+    infoRows += `<tr><td>マウントポイント</td><td>${mpSafe} <button class="btn btn-sm btn-secondary" onclick="openTerminalAt('${escapeJs(dev.mountpoint)}')" title="${escapeAttr(dev.mountpoint)} でターミナルを開く" style="margin-left:0.4rem;">ターミナルで開く</button></td></tr>`;
   }
   if (dev.model) infoRows += `<tr><td>モデル</td><td>${escapeHtml(dev.model)}</td></tr>`;
   if (dev.serial) infoRows += `<tr><td>シリアル</td><td>${escapeHtml(dev.serial)}</td></tr>`;
@@ -1274,7 +1298,7 @@ function renderDiskDevice(dev, depth) {
         <div class="btn-group">
           ${createBtn}${diskDeleteBtn}${actionBtn}${deleteBtn}
           ${isDisk ? `
-          <button class="btn btn-sm btn-secondary" onclick="toggleDiskDetail('${escapeHtml(dev.name)}')" title="パーティション情報を表示" id="btn-toggle-detail-${detailId}">
+          <button class="btn btn-sm btn-secondary" onclick="toggleDiskDetail('${escapeJs(dev.name)}')" title="パーティション情報を表示" id="btn-toggle-detail-${detailId}">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:0.85rem;height:0.85rem;transition:transform 0.15s;"><polyline points="6 9 12 15 18 9"/></svg>
             詳細
           </button>` : ''}
@@ -2197,8 +2221,26 @@ function escapeHtml(str) {
 }
 
 function escapeJs(str) {
-  if (!str) return '';
-  return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/</g, '\\x3c')
+    .replace(/>/g, '\\x3e');
+}
+
+// HTML属性値 (value="..." 等) 用。escapeHtml は " を &quot; にするので属性値に適するが
+// JS文字列と混同しないよう専用ヘルパーとして分離する。
+function escapeAttr(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 function showStatus(msg, type) {
@@ -2379,7 +2421,7 @@ async function loadClonezillaVersions() {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
     sel.innerHTML = data.versions.map(v =>
-      `<option value="${escapeHtml(v.name)}">${escapeHtml(v.name)}</option>`
+      `<option value="${escapeAttr(v.name)}">${escapeHtml(v.name)}</option>`
     ).join('') || '<option value="">バージョンがありません</option>';
     sel.disabled = false;
     fileBtn.disabled = false;
@@ -2402,7 +2444,7 @@ async function loadClonezillaFiles() {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
     fileSel.innerHTML = data.files.map(f =>
-      `<option value="${escapeHtml(f.download_url)}" data-filename="${escapeJs(f.name)}">${escapeHtml(f.name)}</option>`
+      `<option value="${escapeAttr(f.download_url)}" data-filename="${escapeAttr(f.name)}">${escapeHtml(f.name)}</option>`
     ).join('') || '<option value="">ISOファイルがありません</option>';
     fileSel.disabled = false;
     dlBtn.disabled = false;
@@ -2587,7 +2629,7 @@ async function loadBackupPartitions() {
     const options = data.partitions.map(p => {
       const label = [p.device, p.size, p.fstype || '(fs不明)', p.mountpoint ? `mount=${p.mountpoint}` : null]
         .filter(Boolean).join(' / ');
-      return `<option value="${escapeHtml(p.device)}">${escapeHtml(label)}</option>`;
+      return `<option value="${escapeAttr(p.device)}">${escapeHtml(label)}</option>`;
     }).join('');
     destSel.innerHTML = options || '<option value="">パーティションがありません</option>';
     srcSel.innerHTML = options || '<option value="">パーティションがありません</option>';
@@ -2688,7 +2730,7 @@ async function loadRestoreImages() {
       return;
     }
     imgSel.innerHTML = data.images.map(img =>
-      `<option value="${escapeHtml(img)}">${escapeHtml(img)}</option>`).join('');
+      `<option value="${escapeAttr(img)}">${escapeHtml(img)}</option>`).join('');
     showBackupStatus(`${data.images.length} 件のバックアップイメージが見つかりました`, 'success');
   } catch (e) {
     imgSel.innerHTML = '<option value="">イメージ一覧の取得に失敗しました</option>';
@@ -2739,7 +2781,7 @@ async function loadSnapperPage() {
     }
     const prev = sel.value;
     sel.innerHTML = snapperConfigs.map(c =>
-      `<option value="${escapeHtml(c.config)}">${escapeHtml(c.config)}${c.subvolume ? ` (${escapeHtml(c.subvolume)})` : ''}</option>`
+      `<option value="${escapeAttr(c.config)}">${escapeHtml(c.config)}${c.subvolume ? ` (${escapeHtml(c.subvolume)})` : ''}</option>`
     ).join('');
     sel.disabled = false;
     if (prev && snapperConfigs.some(c => c.config === prev)) {
@@ -2780,8 +2822,8 @@ async function loadSnapperSnapshots() {
               <td>${escapeHtml(s.cleanup || '-')}</td>
               <td>
                 <div class="btn-group">
-                  <button class="btn btn-sm btn-primary" onclick="restoreSnapper(${s.number})">復元</button>
-                  <button class="btn btn-sm btn-danger" onclick="deleteSnapper(${s.number})">削除</button>
+                  <button class="btn btn-sm btn-primary" onclick="restoreSnapper(${Number(s.number) || 0})">復元</button>
+                  <button class="btn btn-sm btn-danger" onclick="deleteSnapper(${Number(s.number) || 0})">削除</button>
                 </div>
               </td>
             </tr>`).join('')}
@@ -3149,7 +3191,7 @@ function renderFleetCard(n) {
       <div class="fleet-card-head">
         <div class="wifi-ssid-cell">
           <svg class="icon-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg>
-          <a class="fleet-host-link" href="${escapeHtml(n.url || '#')}" target="_blank" rel="noopener" title="新しいタブで開く">${escapeHtml(name)}</a>
+          <a class="fleet-host-link" href="${escapeAttr(n.url || '#')}" target="_blank" rel="noopener" title="新しいタブで開く">${escapeHtml(name)}</a>
           ${selfBadge}${offBadge}
         </div>
         <button class="btn btn-sm btn-secondary" onclick="unpinFleetNode('${escapeJs(n.key)}')" title="ピン留めを解除">解除</button>
@@ -3225,7 +3267,7 @@ function renderFleetDetect() {
     return `
       <tr>
         <td>
-          <a class="fleet-host-link" href="${escapeHtml(n.url || '#')}" target="_blank" rel="noopener" title="新しいタブで開く">${escapeHtml(n.hostname)}</a>
+          <a class="fleet-host-link" href="${escapeAttr(n.url || '#')}" target="_blank" rel="noopener" title="新しいタブで開く">${escapeHtml(n.hostname)}</a>
           ${n.is_self ? '<span class="badge badge-other" style="font-size:0.62rem;margin-left:0.3rem;">このPC</span>' : ''}
         </td>
         <td>${st}</td>
@@ -3279,13 +3321,16 @@ async function unpinFleetNode(key) {
 function refreshFleetView() {
   const dn = key => fleetNodes.find(n => n.key === key);
   fetch('/api/fleet/pins', { cache: 'no-store' })
-    .then(r => r.json())
+    .then(r => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    })
     .then(data => {
       const pinnedKeys = new Set((data.pins || []).map(p => p.key));
       fleetNodes.forEach(n => { n.pinned = pinnedKeys.has(n.key); });
       renderFleetDetect();
     })
-    .catch(() => {});
+    .catch((e) => { console.error('Fleet view refresh error:', e); });
   loadFleetPins();
 }
 

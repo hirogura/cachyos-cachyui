@@ -161,7 +161,7 @@ fi
 # --- Deploy app from GitHub ---
 log "Cloning cachy-UI from GitHub..."
 TEMP_DIR=$(mktemp -d)
-trap "rm -rf $TEMP_DIR" EXIT
+trap 'rm -rf "${TEMP_DIR:?}"' EXIT
 
 if [[ -d "$APP_DIR/.git" ]]; then
   info "Existing installation found. Updating..."

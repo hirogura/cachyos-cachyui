@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # --- yes/noプロンプト関数 ---
 ask_yn() {
@@ -19,7 +19,7 @@ sudo timedatectl set-timezone Asia/Tokyo
 sudo pacman -Syu --needed --noconfirm curl git
 
 # --- Tailscale インストール ---
-curl -fsSL https://tailscale.com/install.sh | sh
+curl -fsSL https://tailscale.com/install.sh | sudo sh
 
 echo ""
 if ask_yn "Tailscale の authkey がありますか？"; then
