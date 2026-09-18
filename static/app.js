@@ -10,9 +10,9 @@ let selectedWifiNetwork = null;
 let pendingTerminalCwd = null;
 
 // --- Tab Navigation ---
-// 外部ツールタブ (servEX/selfcode/EasyLXD/VM Manager) は別ページを開くだけで
+// 外部ツールタブ (servEX/selfcode/EasyLXD/VM Manager/Disk Manager) は別ページを開くだけで
 // 対応する tab-xxx セクションが存在しないため、汎用リスナー・switchTabから除外する。
-const EXTERNAL_TABS = new Set(['servex', 'selfcode', 'easylxd', 'vmmanager']);
+const EXTERNAL_TABS = new Set(['servex', 'selfcode', 'easylxd', 'vmmanager', 'diskmanager']);
 document.querySelectorAll('.nav-links li').forEach(li => {
   li.addEventListener('click', () => {
     if (EXTERNAL_TABS.has(li.dataset.tab)) return;
@@ -2371,24 +2371,24 @@ async function openVMManager() {
   }
 }
 
-// --- ddrescueGUI ---
-async function openDdrescueGui() {
+// --- Disk Manager ---
+async function openDiskManager() {
   try {
-    const resp = await fetch('/api/ddrescuegui/status');
+    const resp = await fetch('/api/diskmanager/status');
     const data = await resp.json();
 
     if (data.installed && data.url) {
       window.open(data.url, '_blank');
     } else if (data.installed) {
       switchTab('terminal');
-      showStatus('ddrescueGUIはインストール済みです。URLを取得できませんでした。', 'info');
+      showStatus('Disk Managerはインストール済みです。URLを取得できませんでした。', 'info');
     } else {
-      if (!confirm('ddrescueGUIはまだインストールされていません。\nインストールしますか？')) return;
+      if (!confirm('Disk Managerはまだインストールされていません。\nインストールしますか？')) return;
       switchTab('terminal');
-      showStatus('ddrescueGUIをインストール中... ターミナルで進捗を確認できます。', 'info');
+      showStatus('Disk Managerをインストール中... ターミナルで進捗を確認できます。', 'info');
       setTimeout(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
-          const installCmd = 'sudo rm -rf /tmp/ddrescuegui && cd /tmp && sudo git clone https://github.com/hirogura/ddrescuegui.git && cd ddrescuegui && sudo bash install.sh\n';
+          const installCmd = 'sudo wget -O /tmp/diskmanager-install.sh https://raw.githubusercontent.com/hirogura/diskmanager/main/install.sh && sudo bash /tmp/diskmanager-install.sh\n';
           ws.send(JSON.stringify({ type: 'input', data: installCmd }));
         } else {
           showStatus('ターミナルに接続できません', 'error');
@@ -2396,7 +2396,7 @@ async function openDdrescueGui() {
       }, 500);
     }
   } catch (e) {
-    showStatus(`ddrescueGUI確認エラー: ${e.message}`, 'error');
+    showStatus(`Disk Manager確認エラー: ${e.message}`, 'error');
   }
 }
 
