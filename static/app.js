@@ -10,9 +10,9 @@ let selectedWifiNetwork = null;
 let pendingTerminalCwd = null;
 
 // --- Tab Navigation ---
-// 外部ツールタブ (servEX/selfcode/EasyLXD/VM Manager/Disk Manager) は別ページを開くだけで
+// 外部ツールタブ (selfEx/selfcode/EasyLXD/VM Manager/Disk Manager) は別ページを開くだけで
 // 対応する tab-xxx セクションが存在しないため、汎用リスナー・switchTabから除外する。
-const EXTERNAL_TABS = new Set(['servex', 'selfcode', 'easylxd', 'vmmanager', 'diskmanager']);
+const EXTERNAL_TABS = new Set(['selfex', 'selfcode', 'easylxd', 'vmmanager', 'diskmanager']);
 document.querySelectorAll('.nav-links li').forEach(li => {
   li.addEventListener('click', () => {
     if (EXTERNAL_TABS.has(li.dataset.tab)) return;
@@ -2258,24 +2258,24 @@ function showStatus(msg, type) {
   setTimeout(() => el.remove(), 4000);
 }
 
-// --- servEX ---
-async function openServex() {
+// --- selfEx ---
+async function openSelfex() {
   try {
-    const resp = await fetch('/api/servex/status');
+    const resp = await fetch('/api/selfex/status');
     const data = await resp.json();
 
     if (data.installed && data.url) {
       window.open(data.url, '_blank');
     } else if (data.installed) {
       switchTab('terminal');
-      showStatus('servEXはインストール済みです。URLを取得できませんでした。', 'info');
+      showStatus('selfExはインストール済みです。URLを取得できませんでした。', 'info');
     } else {
-      if (!confirm('servEXはまだインストールされていません。\nインストールしますか？')) return;
+      if (!confirm('selfExはまだインストールされていません。\nインストールしますか？')) return;
       switchTab('terminal');
-      showStatus('servEXをインストール中... ターミナルで進捗を確認できます。', 'info');
+      showStatus('selfExをインストール中... ターミナルで進捗を確認できます。', 'info');
       setTimeout(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
-          const installCmd = 'cd /tmp && sudo git clone https://github.com/hirogura/servex.git && cd servex && sudo bash install-servex.sh\n';
+          const installCmd = 'sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/hirogura/selfex/main/install-selfex1.sh)"\n';
           ws.send(JSON.stringify({ type: 'input', data: installCmd }));
         } else {
           showStatus('ターミナルに接続できません', 'error');
@@ -2283,7 +2283,7 @@ async function openServex() {
       }, 500);
     }
   } catch (e) {
-    showStatus(`servEX確認エラー: ${e.message}`, 'error');
+    showStatus(`selfEx確認エラー: ${e.message}`, 'error');
   }
 }
 
