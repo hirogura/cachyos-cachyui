@@ -2808,6 +2808,166 @@ async def snapper_delete(req: Request):
     return {"success": True, "message": f"スナップショット #{number} を削除しました"}
 
 
+@app.post("/api/snapper/delete-many")
+async def snapper_delete_many(req: Request):
+    """チェックされた複数スナップショットを一括削除する。"""
+    data = await _get_json(req)
+    cfg = _validate_snapper_config(data.get("config", "root"))
+    raw = data.get("numbers")
+    if not isinstance(raw, list) or not raw:
+        raise HTTPException(status_code=400, detail="numbers are required")
+    numbers: list[int] = []
+    for n in raw:
+        numbers.append(_validate_snapshot_number(n))
+    # 重複除去・0番 (current) は削除不可のため除外
+    numbers = sorted({n for n in numbers if n != 0})
+    if not numbers:
+        raise HTTPException(status_code=400, detail="no deletable snapshots")
+    if len(numbers) > 100:
+        raise HTTPException(status_code=400, detail="too many snapshots (max 100)")
+    nums_str = " ".join(str(n) for n in numbers)
+    r = await run_cmd(_sudo(f"snapper -c {shlex.quote(cfg)} delete {nums_str}"), timeout=180)
+    if r["returncode"] != 0:
+        err = (r["stderr"] or r["stdout"]).strip()
+        return {"success": False, "message": f"一括削除に失敗しました: {err}"}
+    return {"success": True, "message": f"{len(numbers)} 件のスナップショットを削除しました (#{', #'.join(str(n) for n in numbers)})"}
+
+
+def _parse_snapper_get_config(stdout: str) -> dict:
+    """`snapper get-config` の出力を dict にパースする (CSV / 表形式の両対応)。"""
+    values: dict[str, str] = {}
+    lines = [l for l in (stdout or "").splitlines() if l.strip()]
+    if not lines:
+        return values
+    # CSV 形式 (Key,Value ヘッダ) を優先
+    try:
+        import csv as _csv
+        import io as _io
+        rows = list(_csv.reader(_io.StringIO("\n".join(lines))))
+        if rows:
+            header = [c.strip().lower() for c in rows[0]]
+            if "key" in header and "value" in header:
+                i_k = header.index("key")
+                i_v = header.index("value")
+                for row in rows[1:]:
+                    if len(row) > max(i_k, i_v) and row[i_k].strip():
+                        values[row[i_k].strip()] = row[i_v].strip() if len(row) > i_v else ""
+                return values
+    except Exception:
+        pass
+    # 表形式フォールバック: Key | Value または Key: Value
+    for line in lines:
+        if "|" in line:
+            cols = [c.strip() for c in line.split("|")]
+            if len(cols) >= 2 and re.fullmatch(r"[A-Z_]+", cols[0] or ""):
+                if cols[0].lower() == "key":
+                    continue
+                values[cols[0]] = cols[1]
+        elif "," in line:
+            cols = [c.strip() for c in line.split(",", 1)]
+            if len(cols) == 2 and re.fullmatch(r"[A-Z_]+", cols[0] or ""):
+                if cols[0].lower() == "key":
+                    continue
+                values[cols[0]] = cols[1]
+    return values
+
+
+@app.get("/api/snapper/config/detail")
+async def snapper_config_detail(config: str = "root"):
+    """指定設定の get-config 値・SUBVOLUME を返す (保持数モーダル用)。"""
+    cfg = _validate_snapper_config(config)
+    which = await run_cmd("which snapper", timeout=5)
+    if which["returncode"] != 0:
+        raise HTTPException(status_code=500, detail="snapper がインストールされていません (sudo pacman -S snapper)")
+    r = await run_cmd(_sudo(f"snapper -c {shlex.quote(cfg)} --csvout get-config 2>&1"), timeout=10)
+    values = _parse_snapper_get_config(r["stdout"]) if r["stdout"] else {}
+    if not values:
+        r2 = await run_cmd(_sudo(f"snapper -c {shlex.quote(cfg)} get-config 2>&1"), timeout=10)
+        if r2["returncode"] != 0 and not r2["stdout"].strip():
+            raise HTTPException(status_code=500, detail=(r2["stderr"] or r2["stdout"]).strip() or "設定を取得できませんでした")
+        values = _parse_snapper_get_config(r2["stdout"])
+    subvolume = values.get("SUBVOLUME") or await _snapper_get_subvolume(cfg)
+    return {"config": cfg, "subvolume": subvolume, "values": values}
+
+
+SNAPPER_SETTABLE_RE = re.compile(r"^[A-Z_]+$")
+# set-config で変更を許可するキー (number / timeline 系を中心に一般的なキーを許可)
+SNAPPER_SETTABLE_KEYS = {
+    "ALLOW_USERS", "ALLOW_GROUPS", "SYNC_ACL",
+    "NUMBER_MIN_AGE", "NUMBER_LIMIT", "NUMBER_LIMIT_IMPORTANT",
+    "TIMELINE_MIN_AGE", "TIMELINE_LIMIT_HOURLY", "TIMELINE_LIMIT_DAILY",
+    "TIMELINE_LIMIT_WEEKLY", "TIMELINE_LIMIT_MONTHLY", "TIMELINE_LIMIT_YEARLY",
+    "TIMELINE_CREATE", "TIMELINE_CLEANUP", "NUMBER_CLEANUP",
+    "EMPTY_PRE_POST_CLEANUP", "EMPTY_PRE_POST_MIN_AGE",
+    "BACKGROUND_COMPARISON",
+}
+
+
+@app.post("/api/snapper/config/set")
+async def snapper_config_set(req: Request):
+    """保持数 (number/timeline 系) などの設定値を変更する。"""
+    data = await _get_json(req)
+    cfg = _validate_snapper_config(data.get("config", "root"))
+    values = data.get("values")
+    if not isinstance(values, dict) or not values:
+        raise HTTPException(status_code=400, detail="values are required")
+    pairs: list[str] = []
+    for k, v in values.items():
+        key = (k or "").strip()
+        if not SNAPPER_SETTABLE_RE.fullmatch(key) or key not in SNAPPER_SETTABLE_KEYS:
+            raise HTTPException(status_code=400, detail=f"invalid key: {key}")
+        val = str(v).strip()
+        if "\n" in val or "\r" in val or "\x00" in val:
+            raise HTTPException(status_code=400, detail=f"invalid value for {key}")
+        if len(val) > 500:
+            raise HTTPException(status_code=400, detail=f"value too long for {key}")
+        pairs.append(f"{key}={val}")
+    if not pairs:
+        raise HTTPException(status_code=400, detail="no valid values")
+    cmd = _sudo(f"snapper -c {shlex.quote(cfg)} set-config {' '.join(shlex.quote(p) for p in pairs)}")
+    r = await run_cmd(cmd, timeout=30)
+    if r["returncode"] != 0:
+        err = (r["stderr"] or r["stdout"]).strip()
+        return {"success": False, "message": f"設定の更新に失敗しました: {err}"}
+    return {"success": True, "message": f"{cfg} の設定を更新しました ({', '.join(pairs)})"}
+
+
+@app.get("/api/snapper/subvolumes")
+async def snapper_subvolumes(config: str = "root"):
+    """設定されているサブボリューム一覧を返す (サブボリュームモーダル用)。"""
+    cfg = _validate_snapper_config(config)
+    which = await run_cmd("which snapper", timeout=5)
+    if which["returncode"] != 0:
+        raise HTTPException(status_code=500, detail="snapper がインストールされていません (sudo pacman -S snapper)")
+    configs = await _snapper_list_configs()
+    subvolume = await _snapper_get_subvolume(cfg)
+    # btrfs サブボリューム一覧 (対象サブボリューム配下・最大200件)
+    btrfs_list: list[str] = []
+    btrfs_error = ""
+    target = subvolume if subvolume.startswith("/") else "/"
+    # 存在確認してから list する
+    chk = await run_cmd(_sudo(f"test -d {shlex.quote(target)}"), timeout=5)
+    list_target = target if chk["returncode"] == 0 else "/"
+    r = await run_cmd(_sudo(f"btrfs subvolume list {shlex.quote(list_target)} 2>&1"), timeout=30)
+    if r["returncode"] == 0:
+        for line in (r["stdout"] or "").splitlines():
+            line = line.strip()
+            if line:
+                btrfs_list.append(line)
+        btrfs_list = btrfs_list[:200]
+    else:
+        btrfs_error = (r["stderr"] or r["stdout"]).strip()[:300]
+    return {
+        "config": cfg,
+        "subvolume": subvolume,
+        "configs": configs,
+        "list_target": list_target,
+        "btrfs_subvolumes": btrfs_list,
+        "btrfs_count": len(btrfs_list),
+        "btrfs_error": btrfs_error,
+    }
+
+
 @app.post("/api/snapper/restore")
 async def snapper_restore(req: Request):
     """スナップショットから復元する (Btrfs Assistant 方式が主、失敗時は snapper rollback にフォールバック)。"""

@@ -2020,7 +2020,7 @@ async function loadSnapperSnapshots() {
     container.innerHTML = `
       <table class="proc-table">
         <thead>
-          <tr><th>#</th><th>日時</th><th>説明</th><th>クリーンアップ</th><th>操作</th></tr>
+          <tr><th>#</th><th>日時</th><th>説明</th><th>クリーンアップ</th><th>操作</th><th style="white-space:nowrap;"><button class="btn btn-sm btn-danger" onclick="deleteSnapperBulk()">一括削除</button></th></tr>
         </thead>
         <tbody>
           ${data.snapshots.map(s => `
@@ -2035,13 +2035,187 @@ async function loadSnapperSnapshots() {
                   <button class="btn btn-sm btn-danger" onclick="deleteSnapper(${Number(s.number) || 0})">削除</button>
                 </div>
               </td>
+              <td style="text-align:center;">
+                <input type="checkbox" class="snapper-del-check" value="${Number(s.number) || 0}" ${Number(s.number) === 0 ? 'disabled title="現在のシステム (#0) は削除できません"' : ''}>
+              </td>
             </tr>`).join('')}
         </tbody>
-      </table>`;
+      </table>
+      <p class="muted" style="margin-top:0.5rem;font-size:0.78rem;">削除したいスナップショットにチェックを入れて「一括削除」を押してください（#0 は削除できません）。<a href="#" onclick="toggleSnapperChecks(true);return false;">全選択</a> / <a href="#" onclick="toggleSnapperChecks(false);return false;">全解除</a></p>`;
   } catch (e) {
     container.innerHTML = '';
     statusEl.className = 'status-msg show error';
     statusEl.textContent = `一覧取得エラー: ${e.message}`;
+  }
+}
+
+function toggleSnapperChecks(on) {
+  document.querySelectorAll('.snapper-del-check:not(:disabled)').forEach(c => { c.checked = !!on; });
+}
+
+async function deleteSnapperBulk() {
+  const sel = document.getElementById('snapper-config-select');
+  const config = (sel && sel.value) || 'root';
+  const checks = Array.from(document.querySelectorAll('.snapper-del-check:checked')).map(c => Number(c.value) || 0).filter(n => n !== 0);
+  if (!checks.length) {
+    showStatus('一括削除するスナップショットにチェックを入れてください', 'error');
+    return;
+  }
+  if (!confirm(`チェックした ${checks.length} 件のスナップショットを一括削除しますか？\n\n#${checks.join(', #')}\n\n削除後は元に戻せません。`)) return;
+  const statusEl = document.getElementById('snapper-status-msg');
+  statusEl.className = 'status-msg show info';
+  statusEl.innerHTML = '<span class="spinner"></span> 一括削除中...';
+  try {
+    const resp = await fetch('/api/snapper/delete-many', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config, numbers: checks }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.success) {
+      throw new Error(data.detail || data.message || `HTTP ${resp.status}`);
+    }
+    statusEl.className = 'status-msg show success';
+    statusEl.textContent = data.message;
+    showStatus(data.message, 'success');
+    loadSnapperSnapshots();
+  } catch (e) {
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `一括削除エラー: ${e.message}`;
+  }
+}
+
+// --- Snapper サブボリューム一覧モーダル ---
+async function openSnapperSubvolModal() {
+  const sel = document.getElementById('snapper-config-select');
+  const config = (sel && sel.value) || 'root';
+  document.getElementById('snapper-subvol-config-label').textContent = `設定: ${config}`;
+  document.getElementById('snapper-subvol-status').className = 'status-msg';
+  document.getElementById('snapper-subvol-status').textContent = '';
+  document.getElementById('snapper-subvol-body').innerHTML = '<p class="muted"><span class="spinner"></span> 取得中...</p>';
+  document.getElementById('snapper-subvol-modal').style.display = 'flex';
+  try {
+    const resp = await fetch(`/api/snapper/subvolumes?config=${encodeURIComponent(config)}`);
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    const body = document.getElementById('snapper-subvol-body');
+    const cfgRows = (data.configs || []).map(c =>
+      `<tr><td>${escapeHtml(c.config)}</td><td style="font-family:monospace;">${escapeHtml(c.subvolume || '-')}</td></tr>`
+    ).join('');
+    let btrfsHtml = '';
+    if ((data.btrfs_subvolumes || []).length) {
+      btrfsHtml = `<pre class="terminal-output" style="max-height:220px;overflow:auto;">${escapeHtml(data.btrfs_subvolumes.join('\n'))}</pre>
+        <p class="muted" style="font-size:0.75rem;margin-top:0.3rem;">${data.btrfs_count} 件 (対象: ${escapeHtml(data.list_target || '')})</p>`;
+    } else {
+      btrfsHtml = `<p class="muted">${escapeHtml(data.btrfs_error || 'btrfs サブボリューム情報を取得できませんでした。')}</p>`;
+    }
+    body.innerHTML = `
+      <h4 style="margin:0 0 0.4rem;">設定されているサブボリューム</h4>
+      <table class="proc-table"><thead><tr><th>設定</th><th>サブボリューム</th></tr></thead><tbody>${cfgRows || '<tr><td colspan="2" class="muted">設定がありません</td></tr>'}</tbody></table>
+      <h4 style="margin:1rem 0 0.4rem;">btrfs サブボリューム一覧 <span class="muted" style="font-weight:400;">(${escapeHtml(data.subvolume || '')})</span></h4>
+      ${btrfsHtml}`;
+  } catch (e) {
+    document.getElementById('snapper-subvol-body').innerHTML = '';
+    const st = document.getElementById('snapper-subvol-status');
+    st.className = 'status-msg show error';
+    st.textContent = `取得エラー: ${e.message}`;
+  }
+}
+
+function closeSnapperSubvolModal() {
+  document.getElementById('snapper-subvol-modal').style.display = 'none';
+}
+
+// --- Snapper 保持数 (number/timeline) モーダル ---
+const SNAPPER_LIMIT_DEFS = [
+  { key: 'NUMBER_CLEANUP', label: 'number クリーンアップ', type: 'yesno', desc: '古い number スナップショットを自動削除する' },
+  { key: 'NUMBER_MIN_AGE', label: 'NUMBER_MIN_AGE (秒)', type: 'number', desc: 'この秒数より新しいスナップショットは削除対象外' },
+  { key: 'NUMBER_LIMIT', label: 'NUMBER_LIMIT', type: 'number', desc: 'number スナップショットの保持数' },
+  { key: 'NUMBER_LIMIT_IMPORTANT', label: 'NUMBER_LIMIT_IMPORTANT', type: 'number', desc: 'important な number スナップショットの保持数' },
+  { key: 'TIMELINE_CREATE', label: 'timeline 作成', type: 'yesno', desc: 'timeline スナップショットを自動作成する' },
+  { key: 'TIMELINE_CLEANUP', label: 'timeline クリーンアップ', type: 'yesno', desc: '古い timeline スナップショットを自動削除する' },
+  { key: 'TIMELINE_MIN_AGE', label: 'TIMELINE_MIN_AGE (秒)', type: 'number', desc: 'この秒数より新しいスナップショットは削除対象外' },
+  { key: 'TIMELINE_LIMIT_HOURLY', label: 'TIMELINE_LIMIT_HOURLY', type: 'number', desc: '時間単位の保持数' },
+  { key: 'TIMELINE_LIMIT_DAILY', label: 'TIMELINE_LIMIT_DAILY', type: 'number', desc: '日単位の保持数' },
+  { key: 'TIMELINE_LIMIT_WEEKLY', label: 'TIMELINE_LIMIT_WEEKLY', type: 'number', desc: '週単位の保持数' },
+  { key: 'TIMELINE_LIMIT_MONTHLY', label: 'TIMELINE_LIMIT_MONTHLY', type: 'number', desc: '月単位の保持数' },
+  { key: 'TIMELINE_LIMIT_YEARLY', label: 'TIMELINE_LIMIT_YEARLY', type: 'number', desc: '年単位の保持数' },
+  { key: 'EMPTY_PRE_POST_CLEANUP', label: 'empty pre-post クリーンアップ', type: 'yesno', desc: '空の pre/post ペアを自動削除する' },
+  { key: 'EMPTY_PRE_POST_MIN_AGE', label: 'EMPTY_PRE_POST_MIN_AGE (秒)', type: 'number', desc: '空ペア削除の最低経過秒数' },
+];
+
+async function openSnapperLimitsModal() {
+  const sel = document.getElementById('snapper-config-select');
+  const config = (sel && sel.value) || 'root';
+  document.getElementById('snapper-limits-config-label').textContent = `設定: ${config}`;
+  document.getElementById('snapper-limits-status').className = 'status-msg';
+  document.getElementById('snapper-limits-status').textContent = '';
+  document.getElementById('snapper-limits-body').innerHTML = '<p class="muted"><span class="spinner"></span> 読み込み中...</p>';
+  document.getElementById('snapper-limits-modal').style.display = 'flex';
+  try {
+    const resp = await fetch(`/api/snapper/config/detail?config=${encodeURIComponent(config)}`);
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    const vals = data.values || {};
+    document.getElementById('snapper-limits-body').innerHTML = SNAPPER_LIMIT_DEFS.map(d => {
+      const cur = vals[d.key] ?? '';
+      let input;
+      if (d.type === 'yesno') {
+        input = `<select data-key="${d.key}" style="width:120px;padding:0.4rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);">
+          <option value="yes" ${cur === 'yes' ? 'selected' : ''}>yes</option>
+          <option value="no" ${cur === 'no' ? 'selected' : ''}>no</option>
+        </select>`;
+      } else {
+        input = `<input type="number" min="0" data-key="${d.key}" value="${escapeAttr(String(cur))}" style="width:120px;padding:0.4rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);">`;
+      }
+      return `<div style="display:flex;gap:0.6rem;align-items:center;justify-content:space-between;padding:0.35rem 0;border-bottom:1px solid var(--border);">
+        <div><div style="font-weight:600;font-size:0.82rem;">${d.label} <span class="muted" style="font-weight:400;font-family:monospace;">${d.key}</span></div>
+        <div class="muted" style="font-size:0.72rem;">${d.desc}${cur !== '' ? ` (現在: ${escapeHtml(String(cur))})` : ''}</div></div>
+        ${input}</div>`;
+    }).join('');
+  } catch (e) {
+    document.getElementById('snapper-limits-body').innerHTML = '';
+    const st = document.getElementById('snapper-limits-status');
+    st.className = 'status-msg show error';
+    st.textContent = `取得エラー: ${e.message}`;
+  }
+}
+
+function closeSnapperLimitsModal() {
+  document.getElementById('snapper-limits-modal').style.display = 'none';
+}
+
+async function submitSnapperLimits() {
+  const sel = document.getElementById('snapper-config-select');
+  const config = (sel && sel.value) || 'root';
+  const inputs = Array.from(document.querySelectorAll('#snapper-limits-body [data-key]'));
+  if (!inputs.length) return;
+  const values = {};
+  inputs.forEach(el => { values[el.getAttribute('data-key')] = el.value.trim(); });
+  const statusEl = document.getElementById('snapper-limits-status');
+  const btn = document.getElementById('btn-snapper-limits-submit');
+  btn.disabled = true;
+  statusEl.className = 'status-msg show info';
+  statusEl.innerHTML = '<span class="spinner"></span> 保存中...';
+  try {
+    const resp = await fetch('/api/snapper/config/set', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config, values }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    btn.disabled = false;
+    if (!resp.ok || !data.success) {
+      throw new Error(data.detail || data.message || `HTTP ${resp.status}`);
+    }
+    statusEl.className = 'status-msg show success';
+    statusEl.textContent = data.message;
+    showStatus(data.message, 'success');
+    setTimeout(closeSnapperLimitsModal, 1200);
+  } catch (e) {
+    btn.disabled = false;
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `保存エラー: ${e.message}`;
   }
 }
 
