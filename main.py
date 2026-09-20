@@ -1553,15 +1553,47 @@ def _build_ocs_cmdline(base_cmdline: str, repo: str, ocs_run: str, revert_cmd: s
     )
 
 
-def _build_default_revert_cmd(orig_default: str | None, had_default: bool) -> str:
+async def _resolve_limine_conf_device() -> tuple[str | None, str]:
+    """ホスト側で limine.conf のあるデバイスと相対パスを求める (本家lib.shと同じ方式)。
+
+    Clonezilla Live 実行中ではなく、エントリ準備時 (CachyOS起動中) に解決する。
+    戻り値: (デバイスパス or None, limine.confの相対パス)。
+    """
+    conf_dir = os.path.dirname(LIMINE_CONF)
+    dev_r = await run_cmd(f"findmnt -n -o SOURCE --target {shlex.quote(conf_dir)} 2>/dev/null | head -1", timeout=5)
+    mp_r = await run_cmd(f"findmnt -n -o TARGET --target {shlex.quote(conf_dir)} 2>/dev/null | head -1", timeout=5)
+    dev = (dev_r["stdout"] or "").strip().splitlines()
+    mp = (mp_r["stdout"] or "").strip().splitlines()
+    if not dev or not mp:
+        return None, ""
+    dev = dev[0].strip().split("[")[0].strip()
+    mp = mp[0].strip()
+    if not dev.startswith("/dev/") or not mp.startswith("/"):
+        return None, ""
+    if LIMINE_CONF.startswith(mp.rstrip("/") + "/"):
+        rel = LIMINE_CONF[len(mp.rstrip("/")) + 1:].lstrip("/")
+    else:
+        rel = "limine.conf"
+    if not rel or ".." in rel.split("/"):
+        return None, ""
+    return dev, rel
+
+
+def _build_default_revert_cmd(orig_default: str | None, had_default: bool, bootdev: str, rel: str) -> str:
     """ocs_prerun 先頭で default_entry を元に戻すシェル片を生成する。"""
-    # /boot のデバイスを /mnt にマウントして limine.conf を書き戻す
+    # 本家lib.shと同じく、準備時に解決したデバイスをリテラルで埋め込む。
+    # Live実行中に findmnt すると overlay が返りマウントに失敗するため、動的解決はしない。
+    _validate_block_device(bootdev)
+    rel = (rel or "limine.conf").lstrip("/")
+    if not rel or ".." in rel.split("/") or any(ch in rel for ch in ("'", '"', "`", "\\", "\n", "\r", "$", ";", "&", "|", "<", ">")):
+        raise HTTPException(status_code=500, detail="limine.conf の相対パスを特定できませんでした")
+    target = f"/mnt/{rel}"
     if had_default and orig_default:
         safe = orig_default.replace("'", "'\\''")
-        sed_cmd = f"sed -i 's|^[[:space:]]*default_entry:.*|default_entry: {safe}|' /mnt/limine.conf"
+        sed_cmd = f"sed -i 's|^[[:space:]]*default_entry:.*|default_entry: {safe}|' {target}"
     else:
-        sed_cmd = "sed -i '/^[[:space:]]*default_entry:/d' /mnt/limine.conf"
-    return "BOOTDEV=$(findmnt -n -o SOURCE /boot 2>/dev/null || findmnt -n -o SOURCE /) && mount -o rw $BOOTDEV /mnt && " + sed_cmd + " ; umount /mnt"
+        sed_cmd = f"sed -i '/^[[:space:]]*default_entry:/d' {target}"
+    return f"mount -o rw {shlex.quote(bootdev)} /mnt && " + sed_cmd + " ; umount /mnt"
 
 
 @app.post("/api/backup/run")
@@ -1629,7 +1661,10 @@ async def backup_run(req: Request):
 
     revert = ""
     if mode == "restore":
-        revert = _build_default_revert_cmd(orig_default, had_default)
+        bootdev, rel = await _resolve_limine_conf_device()
+        if bootdev:
+            revert = _build_default_revert_cmd(orig_default, had_default, bootdev, rel)
+        # 解決できない場合は revert なし (復元で /boot が上書きされれば自然に戻る)
 
     cmdline = _build_ocs_cmdline(base_cmd, device, ocs_run, revert)
     entry = (
