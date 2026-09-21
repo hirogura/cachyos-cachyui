@@ -2915,6 +2915,123 @@ def _parse_snapper_list_plain(stdout: str) -> list[dict]:
     return snapshots
 
 
+def _snapper_is_btrfs_error(text: str) -> bool:
+    """snapper の出力が「/ が btrfs ではない」系の失敗かを判定する。
+
+    Limine メニューからスナップショット起動中は / が overlayfs になるため
+    `snapper list` が `query default id failed, subvolume is not a btrfs subvolume`
+    で失敗する (snapper の仕様)。この場合は info.xml 直読みにフォールバックする。
+    """
+    low = (text or "").lower()
+    return any(k in low for k in (
+        "query default id failed",
+        "subvolume is not a btrfs subvolume",
+        "not a btrfs filesystem",
+        ".snapshots is not a btrfs subvolume",
+    ))
+
+
+async def _snapper_boot_state() -> dict:
+    """スナップショット起動中 (overlay) かを判定する。"""
+    fstype = ""
+    try:
+        r = await run_cmd("findmnt -no FSTYPE / 2>/dev/null", timeout=5)
+        if r["returncode"] == 0:
+            fstype = (r["stdout"] or "").strip().splitlines()[0].strip() if (r["stdout"] or "").strip() else ""
+    except Exception:
+        pass
+    snapshot_boot = bool(fstype and fstype != "btrfs")
+    # btrfs 判定が取れない環境では subvolume show の成否で補完する
+    if not snapshot_boot:
+        try:
+            chk = await run_cmd(_sudo("btrfs subvolume show / 2>&1"), timeout=10)
+            out = ((chk.get("stdout") or "") + (chk.get("stderr") or ""))
+            if chk["returncode"] != 0 and _snapper_is_btrfs_error(out):
+                snapshot_boot = True
+        except Exception:
+            pass
+    return {"snapshot_boot": snapshot_boot, "fstype_root": fstype}
+
+
+def _parse_snapshot_info_xml(text: str) -> dict | None:
+    """snapper の info.xml 1件を一覧行 dict に変換する。失敗時は None。"""
+    import xml.etree.ElementTree as _et
+    try:
+        root = _et.fromstring(text)
+    except Exception:
+        return None
+
+    def _child(name: str) -> str:
+        for tag in (name, name.replace("_", "-"), name.replace("-", "_")):
+            el = root.find(tag)
+            if el is not None and el.text:
+                return el.text.strip()
+        # 大文字小文字を無視して探索
+        lname = name.lower().replace("_", "").replace("-", "")
+        for el in root.iter():
+            tag = (el.tag or "").split("}")[-1].lower().replace("_", "").replace("-", "")
+            if tag == lname and el.text:
+                return el.text.strip()
+        return ""
+
+    num = _child("num") or _child("number")
+    if not num.isdigit():
+        return None
+    return {
+        "number": int(num),
+        "type": _child("type"),
+        "pre": _child("pre_num") or _child("pre"),
+        "date": _child("date"),
+        "user": "",
+        "cleanup": _child("cleanup") or _child("cleanup_algorithm"),
+        "description": _child("description"),
+        "userdata": _child("userdata"),
+    }
+
+
+async def _snapper_list_from_info_xml(cfg: str, subvolume: str = "") -> list[dict]:
+    """`/.snapshots/*/info.xml` を直読みして一覧を組み立てる (snapper CLI 不能時の代替手段)。"""
+    candidates: list[str] = []
+    for d in ("/.snapshots", "/@/.snapshots"):
+        if d not in candidates:
+            candidates.append(d)
+    if subvolume and subvolume.startswith("/"):
+        d = os.path.join(subvolume.rstrip("/") or "/", ".snapshots")
+        if d not in candidates:
+            candidates.append(d)
+    snapshots: list[dict] = []
+    for snapdir in candidates:
+        try:
+            entries = os.listdir(snapdir)
+        except OSError:
+            # 権限不足時は sudo で代替
+            r = await run_cmd(_sudo(f"ls -1 {shlex.quote(snapdir)} 2>/dev/null"), timeout=10)
+            if r["returncode"] != 0:
+                continue
+            entries = [l.strip() for l in (r["stdout"] or "").splitlines() if l.strip()]
+        for name in entries:
+            if not name.isdigit():
+                continue
+            info_path = os.path.join(snapdir, name, "info.xml")
+            text = ""
+            try:
+                with open(info_path, encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+            except OSError:
+                rc = await run_cmd(_sudo(f"cat {shlex.quote(info_path)} 2>/dev/null"), timeout=10)
+                if rc["returncode"] == 0 and rc["stdout"].strip():
+                    text = rc["stdout"]
+                else:
+                    continue
+            row = _parse_snapshot_info_xml(text)
+            if row is not None and all(s["number"] != row["number"] for s in snapshots):
+                snapshots.append(row)
+        if snapshots:
+            break
+    snapshots.sort(key=lambda s: s["number"], reverse=True)
+    return snapshots
+
+
 async def _snapper_list_configs() -> list[dict]:
     """snapper list-configs をパースして設定一覧を返す。"""
     r = await run_cmd(_sudo("snapper --csvout list-configs 2>/dev/null"), timeout=10)
@@ -2962,20 +3079,60 @@ async def snapper_status():
 
 @app.get("/api/snapper/snapshots")
 async def snapper_snapshots(config: str = "root"):
-    """指定設定のスナップショット一覧を返す。"""
+    """指定設定のスナップショット一覧を返す。
+
+    Limine メニューからスナップショット起動中は / が overlayfs になるため
+    snapper CLI が `query default id failed` で失敗する。その場合は
+    `/.snapshots/*/info.xml` 直読みにフォールバックして一覧は表示する。
+    """
     cfg = _validate_snapper_config(config)
     which = await run_cmd("which snapper", timeout=5)
     if which["returncode"] != 0:
         raise HTTPException(status_code=500, detail="snapper がインストールされていません (sudo pacman -S snapper)")
     r = await run_cmd(_sudo(f"snapper -c {shlex.quote(cfg)} --csvout list 2>&1"), timeout=15)
     snapshots = _parse_snapper_list_csv(r["stdout"]) if r["stdout"] else None
+    raw_output = r["stdout"] or ""
     if snapshots is None:
         r2 = await run_cmd(_sudo(f"snapper -c {shlex.quote(cfg)} list 2>&1"), timeout=15)
+        raw_output = ((r2.get("stdout") or "") + "\n" + (r2.get("stderr") or ""))
         if r2["returncode"] != 0:
-            raise HTTPException(status_code=500, detail=(r2["stderr"] or r2["stdout"]).strip() or "スナップショット一覧を取得できませんでした")
-        snapshots = _parse_snapper_list_plain(r2["stdout"])
-    snapshots.sort(key=lambda s: s["number"], reverse=True)
-    return {"config": cfg, "snapshots": snapshots, "count": len(snapshots)}
+            snapshots = None
+        else:
+            snapshots = _parse_snapper_list_plain(r2["stdout"])
+    if snapshots is not None:
+        # snapper CLI がエラーメッセージを混ぜて空リストを返した場合も btrfs エラー扱いにする
+        if not snapshots and _snapper_is_btrfs_error(raw_output):
+            snapshots = None
+        else:
+            snapshots.sort(key=lambda s: s["number"], reverse=True)
+            return {"config": cfg, "snapshots": snapshots, "count": len(snapshots),
+                    "snapshot_boot": False, "fallback": False}
+    # フォールバック: スナップショット起動中 (overlay) の可能性を確認する
+    boot = await _snapper_boot_state()
+    subvolume = ""
+    try:
+        subvolume = await _snapper_get_subvolume(cfg)
+    except Exception:
+        pass
+    fb = await _snapper_list_from_info_xml(cfg, subvolume)
+    if fb:
+        msg = ("スナップショット起動中 (Limine) のため snapper CLI は利用できませんが、"
+               "スナップショット情報を直接読み取って表示しています。")
+        if boot.get("fstype_root"):
+            msg += f" (/: {boot['fstype_root']})"
+        msg += " 復元・削除を行う場合は通常起動に戻すか、端末で limine-snapper-restore / Btrfs Assistant を利用してください。"
+        return {"config": cfg, "snapshots": fb, "count": len(fb),
+                "snapshot_boot": True, "fallback": True, "warning": msg}
+    if _snapper_is_btrfs_error(raw_output) or boot.get("snapshot_boot"):
+        fstype = boot.get("fstype_root") or "btrfs 以外"
+        raise HTTPException(
+            status_code=500,
+            detail=(f"スナップショット起動中のため snapper で一覧を取得できません (/: {fstype})。"
+                    "Limine メニューからスナップショットを起動している間は / が overlayfs になり "
+                    "snapper が動作しません。通常起動に戻るか、復元は limine-snapper-restore / "
+                    "Btrfs Assistant で行ってください。"),
+        )
+    raise HTTPException(status_code=500, detail=(raw_output.strip() or "スナップショット一覧を取得できませんでした")[:500])
 
 
 @app.post("/api/snapper/create")
@@ -3179,15 +3336,38 @@ async def snapper_restore(req: Request):
     data = await _get_json(req)
     cfg = _validate_snapper_config(data.get("config", "root"))
     number = _validate_snapshot_number(data.get("number"))
+    # スナップショット起動中 (overlay) は / が btrfs ではないため置換復元は行わない
+    try:
+        boot = await _snapper_boot_state()
+    except Exception:
+        boot = {}
+    if boot.get("snapshot_boot"):
+        fstype = boot.get("fstype_root") or "btrfs 以外"
+        return {"success": False,
+                "message": (f"スナップショット起動中のため cachy-UI からは復元できません (/: {fstype})。"
+                            f"スナップショット #{number} の復元は、表示中のデスクトップ通知「Restore now」から行うか、"
+                            "端末で limine-snapper-restore / Btrfs Assistant を利用してください。")}
     # Btrfs Assistant と同じ動作: top-level にマウントして rename + btrfs snapshot で置換する。
     # snapper rollback は ambit/既定サブボリューム未設定等で失敗する (`--ambit` エラー) ため先にこちらを試す。
     manual = await _snapper_assistant_restore(cfg, number)
     if manual is not None:
+        if not manual.get("success"):
+            msg = manual.get("message", "")
+            if _snapper_is_btrfs_error(msg):
+                return {"success": False,
+                        "message": (f"スナップショット #{number} への復元に失敗しました: "
+                                    "スナップショット起動中の可能性があります。通常起動に戻るか、"
+                                    "limine-snapper-restore / Btrfs Assistant で復元してください。")}
         return manual
     # 手動復元の前提が揃わない場合は従来の snapper rollback を試す
     r = await run_cmd(_sudo(f"snapper -c {shlex.quote(cfg)} rollback {number}"), timeout=180)
     if r["returncode"] != 0:
         err = (r["stderr"] or r["stdout"]).strip()
+        if _snapper_is_btrfs_error(err):
+            return {"success": False,
+                    "message": (f"スナップショット #{number} への復元に失敗しました: "
+                                "スナップショット起動中の可能性があります。通常起動に戻るか、"
+                                "limine-snapper-restore / Btrfs Assistant で復元してください。")}
         return {"success": False, "message": f"スナップショット #{number} への復元に失敗しました: {err}"}
     out = (r["stdout"] or "").strip()
     msg = f"スナップショット #{number} に復元しました。変更を反映するには再起動してください。"

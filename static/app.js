@@ -2148,10 +2148,17 @@ async function loadSnapperSnapshots() {
   const container = document.getElementById('snapper-list-container');
   const statusEl = document.getElementById('snapper-status-msg');
   container.innerHTML = '<p class="muted"><span class="spinner"></span> スナップショット一覧を取得中...</p>';
+  statusEl.className = 'status-msg';
+  statusEl.textContent = '';
   try {
     const resp = await fetch(`/api/snapper/snapshots?config=${encodeURIComponent(config)}`);
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    // Limineスナップショット起動中のフォールバック表示は警告として残しつつ一覧は表示する
+    if (data.warning) {
+      statusEl.className = 'status-msg show info';
+      statusEl.textContent = data.warning;
+    }
     if (!data.snapshots || data.snapshots.length === 0) {
       container.innerHTML = '<p class="muted">スナップショットはありません。ページ上部の「作成」ボタンで作成できます。</p>';
       return;
