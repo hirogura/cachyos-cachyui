@@ -578,6 +578,211 @@ async def autoremove_packages():
     }
 
 
+# ============================================================
+# 3.5 Cachy-Update 互換チェック (公式 + AUR + Flatpak)
+# ============================================================
+# CachyOS の Cachy-Update (arch-update) と同じ方式:
+#   公式: checkupdates / pacman -Qu
+#   AUR: AURヘルパー (paru/yay/pikaur) の -Qua
+#   Flatpak: flatpak remote-ls --updates
+async def _detect_aur_helper() -> str | None:
+    """利用可能なAURヘルパーを返す (arch-update と同じ優先順: paru/yay/pikaur)。
+
+    arch-update.conf で NoAUR が指定されている場合は None。
+    AURHelper= 指定があればそれを優先する。
+    """
+    username, home, _shell = get_primary_user()
+    conf = os.path.join(home, ".config", "arch-update", "arch-update.conf")
+    try:
+        with open(conf, encoding="utf-8", errors="replace") as f:
+            conf_text = f.read()
+    except OSError:
+        conf_text = ""
+    if re.search(r"^[ \t]*NoAUR[ \t]*$", conf_text, re.M):
+        return None
+    m = re.search(r"^[ \t]*AURHelper[ \t]*=[ \t]*(paru|yay|pikaur)[ \t]*$", conf_text, re.M)
+    if m:
+        cand = [m.group(1)]
+    else:
+        cand = ["paru", "yay", "pikaur"]
+    for helper in cand:
+        r = await run_cmd(f"which {helper} 2>/dev/null", timeout=5)
+        if r["returncode"] == 0:
+            return helper
+    return None
+
+
+async def _flatpak_supported() -> bool:
+    """Flatpak チェック対象かを返す (arch-update と同じ条件: flatpak有り+アプリ有り)。"""
+    username, home, _shell = get_primary_user()
+    conf = os.path.join(home, ".config", "arch-update", "arch-update.conf")
+    try:
+        with open(conf, encoding="utf-8", errors="replace") as f:
+            if re.search(r"^[ \t]*NoFlatpak[ \t]*$", f.read(), re.M):
+                return False
+    except OSError:
+        pass
+    w = await run_cmd("which flatpak 2>/dev/null", timeout=5)
+    if w["returncode"] != 0:
+        return False
+    # インストール済みアプリが1件もなければ対象外 (arch-update と同じ)
+    lst = await run_cmd(_as_user_cmd(username, "flatpak list --columns=application 2>/dev/null"),
+                        timeout=30, extra_env={"HOME": home})
+    return bool(lst["stdout"].strip())
+
+
+def _parse_pkg_lines(stdout: str) -> list[dict]:
+    """checkupdates / aur-helper -Qua の1行出力を {name, info} にする。"""
+    packages = []
+    for line in (stdout or "").strip().split("\n"):
+        line = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+        if not line:
+            continue
+        # "[ignored]" 付きは arch-update と同様に除外
+        if line.endswith("[ignored]"):
+            continue
+        name = line.split()[0]
+        packages.append({"name": name, "info": line})
+    return packages
+
+
+def _parse_flatpak_updates(stdout: str) -> list[dict]:
+    """flatpak remote-ls --updates の出力を {name, info} にする (name=Application ID)。"""
+    packages = []
+    for line in (stdout or "").strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split()
+        app_id = parts[0]
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+(\.[A-Za-z0-9_.-]+)+", app_id):
+            continue
+        packages.append({"name": app_id, "info": line})
+    return packages
+
+
+@app.get("/api/packages/cachy-update")
+async def cachy_update_check():
+    """Cachy-Update と同じ確認処理 (公式 + AUR + Flatpak の更新を一覧化)。"""
+    username, home, _shell = get_primary_user()
+
+    # 公式リポジトリ
+    chk = await run_cmd("which checkupdates", timeout=5)
+    if chk["returncode"] == 0:
+        r = await run_cmd("checkupdates 2>/dev/null", timeout=120)
+    else:
+        r = await run_cmd("pacman -Qu 2>/dev/null", timeout=120)
+    packages = _parse_pkg_lines(r["stdout"])
+
+    # AUR
+    aur_helper = await _detect_aur_helper()
+    aur_packages: list[dict] = []
+    if aur_helper:
+        ra = await run_cmd(
+            _as_user_cmd(username, f"{aur_helper} --color never -Qua 2>/dev/null"),
+            timeout=180, extra_env={"HOME": home},
+        )
+        aur_packages = _parse_pkg_lines(ra["stdout"])
+
+    # Flatpak
+    flatpak_packages: list[dict] = []
+    flatpak_available = await _flatpak_supported()
+    if flatpak_available:
+        await run_cmd(_as_user_cmd(username, "flatpak update --appstream 2>/dev/null >/dev/null"),
+                      timeout=180, extra_env={"HOME": home})
+        rf = await run_cmd(
+            _as_user_cmd(username, "flatpak remote-ls --updates --columns=application,version 2>/dev/null"),
+            timeout=120, extra_env={"HOME": home},
+        )
+        flatpak_packages = _parse_flatpak_updates(rf["stdout"])
+
+    total = len(packages) + len(aur_packages) + len(flatpak_packages)
+    return {
+        "packages": packages, "packages_count": len(packages),
+        "aur": aur_packages, "aur_count": len(aur_packages), "aur_helper": aur_helper,
+        "flatpak": flatpak_packages, "flatpak_count": len(flatpak_packages),
+        "flatpak_available": flatpak_available,
+        "count": total,
+    }
+
+
+@app.post("/api/packages/cachy-update/upgrade")
+async def cachy_update_upgrade():
+    """Cachy-Update と同じ一括更新 (公式 -> AUR -> Flatpak の順に更新)。"""
+    username, home, _shell = get_primary_user()
+    logs: list[str] = []
+    errors: list[str] = []
+    overall = True
+
+    r1 = await run_cmd(_sudo("pacman -Syu --noconfirm"), timeout=900)
+    logs.append("[公式リポジトリ]\n" + (r1["stdout"] or "").strip())
+    if r1["returncode"] != 0:
+        overall = False
+        errors.append("[公式リポジトリ]\n" + ((r1["stderr"] or r1["stdout"]) or "").strip())
+
+    aur_helper = await _detect_aur_helper()
+    if aur_helper:
+        r2 = await run_cmd(_as_user_cmd(username, f"{aur_helper} -Syu --noconfirm"),
+                           timeout=1800, extra_env={"HOME": home})
+        logs.append("[AUR]\n" + (r2["stdout"] or "").strip())
+        if r2["returncode"] != 0:
+            overall = False
+            errors.append("[AUR]\n" + ((r2["stderr"] or r2["stdout"]) or "").strip())
+    else:
+        logs.append("[AUR]\nAURヘルパー (paru/yay/pikaur) がないためスキップしました")
+
+    if await _flatpak_supported():
+        r3 = await run_cmd(_sudo("flatpak update -y"), timeout=1800)
+        logs.append("[Flatpak]\n" + (r3["stdout"] or "").strip())
+        if r3["returncode"] != 0:
+            overall = False
+            errors.append("[Flatpak]\n" + ((r3["stderr"] or r3["stdout"]) or "").strip())
+    else:
+        logs.append("[Flatpak]\nFlatpak がない/アプリがないためスキップしました")
+
+    return {
+        "success": overall,
+        "output": "\n\n".join(l for l in logs if l).strip()[-5000:],
+        "errors": "\n\n".join(errors).strip()[-3000:],
+    }
+
+
+@app.post("/api/packages/upgrade-aur/{package_name}")
+async def upgrade_aur_package(package_name: str):
+    """AURパッケージを1件更新する (AURヘルパー経由・一般ユーザーで実行)。"""
+    if not all(c.isalnum() or c in "-_+." for c in package_name):
+        raise HTTPException(status_code=400, detail="Invalid package name")
+    username, home, _shell = get_primary_user()
+    aur_helper = await _detect_aur_helper()
+    if not aur_helper:
+        raise HTTPException(status_code=500, detail="AURヘルパー (paru/yay/pikaur) が見つかりません")
+    result = await run_cmd(_as_user_cmd(username, f"{aur_helper} -S --noconfirm --needed {package_name}"),
+                           timeout=1800, extra_env={"HOME": home})
+    return {
+        "success": result["returncode"] == 0,
+        "output": result["stdout"],
+        "errors": result["stderr"],
+    }
+
+
+_FLATPAK_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+(\.[A-Za-z0-9_.-]+)+$")
+
+
+@app.post("/api/packages/upgrade-flatpak")
+async def upgrade_flatpak_package(req: Request):
+    """Flatpakアプリを1件更新する。"""
+    data = await _get_json(req)
+    app_id = (data.get("app_id") or data.get("name") or "").strip()
+    if not _FLATPAK_ID_RE.fullmatch(app_id or ""):
+        raise HTTPException(status_code=400, detail="invalid flatpak app id")
+    result = await run_cmd(_sudo(f"flatpak update -y {app_id}"), timeout=1800)
+    return {
+        "success": result["returncode"] == 0,
+        "output": result["stdout"],
+        "errors": result["stderr"],
+    }
+
+
 
 # ============================================================
 # 4. Web Terminal (WebSocket + PTY)

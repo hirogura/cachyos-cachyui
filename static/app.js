@@ -429,12 +429,14 @@ async function checkUpdates() {
       status.className = 'status-msg show success';
       status.textContent = '全パッケージが最新です。';
       document.getElementById('btn-upgrade-all').style.display = 'none';
+      document.getElementById('btn-cachy-upgrade-all').style.display = 'none';
       document.getElementById('package-list-container').innerHTML =
         '<p class="muted">利用可能なアップデートはありません。</p>';
     } else {
       status.className = 'status-msg show info';
       status.textContent = `${data.count}個のパッケージがアップデート可能です。`;
       document.getElementById('btn-upgrade-all').style.display = 'inline-block';
+      document.getElementById('btn-cachy-upgrade-all').style.display = 'none';
 
       const container = document.getElementById('package-list-container');
       container.innerHTML = data.packages.map(p => `
@@ -462,6 +464,143 @@ async function upgradePackage(name) {
       status.className = 'status-msg show success';
       status.textContent = `${name} を更新しました。`;
       checkUpdates();
+    } else {
+      status.className = 'status-msg show error';
+      const cleanErr = sanitizeAptError(data.errors);
+      status.textContent = cleanErr ? `更新に失敗しました: ${cleanErr}` : '更新に失敗しました。';
+    }
+  } catch (e) {
+    status.className = 'status-msg show error';
+    status.textContent = `エラー: ${e.message}`;
+  }
+}
+
+// --- Cachy-Update (公式 + AUR + Flatpak) ---
+function cachyPackageRow(p, fn) {
+  const detail = (p.info && p.info !== p.name) ? ` <span class="muted" style="font-size:0.75rem;">${escapeHtml(p.info)}</span>` : '';
+  return `
+    <div class="package-item">
+      <span>${escapeHtml(p.name)}${detail}</span>
+      <button class="btn btn-sm btn-primary" onclick="${fn}('${escapeJs(p.name)}')">更新</button>
+    </div>`;
+}
+
+async function checkCachyUpdate() {
+  const status = document.getElementById('package-status');
+  status.className = 'status-msg show info';
+  status.innerHTML = '<span class="spinner"></span> Cachy-Update確認中... (公式・AUR・Flatpakを確認するため時間がかかる場合があります)';
+
+  try {
+    const resp = await fetch('/api/packages/cachy-update');
+    const data = await resp.json();
+
+    document.getElementById('btn-upgrade-all').style.display = 'none';
+    if (data.count === 0) {
+      status.className = 'status-msg show success';
+      status.textContent = '全パッケージが最新です (公式・AUR・Flatpak)。';
+      document.getElementById('btn-cachy-upgrade-all').style.display = 'none';
+      document.getElementById('package-list-container').innerHTML =
+        '<p class="muted">利用可能なアップデートはありません。</p>';
+      return;
+    }
+
+    status.className = 'status-msg show info';
+    const parts = [];
+    if (data.packages_count) parts.push(`公式 ${data.packages_count}件`);
+    if (data.aur_count) parts.push(`AUR ${data.aur_count}件 (${escapeHtml(data.aur_helper || '')})`);
+    if (data.flatpak_count) parts.push(`Flatpak ${data.flatpak_count}件`);
+    status.innerHTML = `計${data.count}件のアップデートが可能です (${parts.join(' / ')})。`;
+    document.getElementById('btn-cachy-upgrade-all').style.display = 'inline-block';
+
+    const container = document.getElementById('package-list-container');
+    let html = '';
+    if ((data.packages || []).length) {
+      html += `<h3 style="margin:0.5rem 0;">公式リポジトリ (${data.packages_count}件)</h3>`;
+      html += data.packages.map(p => cachyPackageRow(p, 'upgradePackage')).join('');
+    }
+    if ((data.aur || []).length) {
+      html += `<h3 style="margin:0.5rem 0;">AUR (${data.aur_count}件${data.aur_helper ? ` / ${escapeHtml(data.aur_helper)}` : ''})</h3>`;
+      html += data.aur.map(p => cachyPackageRow(p, 'upgradeAurPackage')).join('');
+    } else if (!data.aur_helper) {
+      html += `<p class="muted">AUR: AURヘルパー (paru/yay/pikaur) がないためスキップしました。</p>`;
+    }
+    if ((data.flatpak || []).length) {
+      html += `<h3 style="margin:0.5rem 0;">Flatpak (${data.flatpak_count}件)</h3>`;
+      html += data.flatpak.map(p => cachyPackageRow(p, 'upgradeFlatpakPackage')).join('');
+    } else if (!data.flatpak_available) {
+      html += `<p class="muted">Flatpak: 対象外 (未導入またはアプリなし) のためスキップしました。</p>`;
+    }
+    container.innerHTML = html || '<p class="muted">利用可能なアップデートはありません。</p>';
+  } catch (e) {
+    status.className = 'status-msg show error';
+    status.textContent = `エラー: ${e.message}`;
+  }
+}
+
+async function upgradeCachyAll() {
+  if (!confirm('Cachy-Updateと同じ一括更新を行いますか？\n\n公式リポジトリ → AUR → Flatpak の順に更新します。\n数分かかる場合があります。')) return;
+
+  const status = document.getElementById('package-status');
+  status.className = 'status-msg show info';
+  status.innerHTML = '<span class="spinner"></span> Cachy-Updateで一括更新中... (数分かかる場合があります)';
+
+  try {
+    const resp = await fetch('/api/packages/cachy-update/upgrade', { method: 'POST' });
+    const data = await resp.json();
+    if (data.success) {
+      status.className = 'status-msg show success';
+      status.textContent = data.output ? `一括更新が完了しました。\n${data.output}` : '一括更新が完了しました。';
+      checkCachyUpdate();
+    } else {
+      status.className = 'status-msg show error';
+      const cleanErr = sanitizeAptError(data.errors);
+      status.textContent = cleanErr ? `更新に失敗しました: ${cleanErr}` : '更新に失敗しました。';
+    }
+  } catch (e) {
+    status.className = 'status-msg show error';
+    status.textContent = `エラー: ${e.message}`;
+  }
+}
+
+async function upgradeAurPackage(name) {
+  const status = document.getElementById('package-status');
+  status.className = 'status-msg show info';
+  status.innerHTML = `<span class="spinner"></span> ${name} (AUR) を更新中...`;
+
+  try {
+    const resp = await fetch(`/api/packages/upgrade-aur/${encodeURIComponent(name)}`, { method: 'POST' });
+    const data = await resp.json();
+    if (data.success) {
+      status.className = 'status-msg show success';
+      status.textContent = `${name} を更新しました。`;
+      checkCachyUpdate();
+    } else {
+      status.className = 'status-msg show error';
+      const cleanErr = sanitizeAptError(data.errors);
+      status.textContent = cleanErr ? `更新に失敗しました: ${cleanErr}` : '更新に失敗しました。';
+    }
+  } catch (e) {
+    status.className = 'status-msg show error';
+    status.textContent = `エラー: ${e.message}`;
+  }
+}
+
+async function upgradeFlatpakPackage(appId) {
+  const status = document.getElementById('package-status');
+  status.className = 'status-msg show info';
+  status.innerHTML = `<span class="spinner"></span> ${appId} (Flatpak) を更新中...`;
+
+  try {
+    const resp = await fetch('/api/packages/upgrade-flatpak', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ app_id: appId }),
+    });
+    const data = await resp.json();
+    if (data.success) {
+      status.className = 'status-msg show success';
+      status.textContent = `${appId} を更新しました。`;
+      checkCachyUpdate();
     } else {
       status.className = 'status-msg show error';
       const cleanErr = sanitizeAptError(data.errors);
