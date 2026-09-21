@@ -2163,28 +2163,35 @@ async function loadSnapperSnapshots() {
       container.innerHTML = '<p class="muted">スナップショットはありません。ページ上部の「作成」ボタンで作成できます。</p>';
       return;
     }
+    // スナップショット起動中は起動中の番号を保持し、復元確認で使う
+    window._snapperBoot = !!data.snapshot_boot;
+    window._snapperBootId = (data.boot_snapshot ?? null);
+    const bootId = window._snapperBootId;
     container.innerHTML = `
       <table class="proc-table">
         <thead>
           <tr><th>#</th><th>日時</th><th>説明</th><th>クリーンアップ</th><th>操作</th><th style="white-space:nowrap;"><button class="btn btn-sm btn-danger" onclick="deleteSnapperBulk()">一括削除</button></th></tr>
         </thead>
         <tbody>
-          ${data.snapshots.map(s => `
-            <tr>
-              <td>${s.number}</td>
+          ${data.snapshots.map(s => {
+            const num = Number(s.number) || 0;
+            const isBoot = window._snapperBoot && bootId !== null && num === bootId;
+            return `
+            <tr${isBoot ? ' style="background:rgba(14,116,144,0.12);"' : ''}>
+              <td>${s.number}${isBoot ? ' <span class="badge badge-active">起動中</span>' : ''}</td>
               <td>${escapeHtml(s.date || '-')}</td>
               <td>${escapeHtml(s.description || '-')}<span class="muted"> (${escapeHtml(s.type || '')})</span></td>
               <td>${escapeHtml(s.cleanup || '-')}</td>
               <td>
                 <div class="btn-group">
-                  <button class="btn btn-sm btn-primary" onclick="restoreSnapper(${Number(s.number) || 0})">復元</button>
-                  <button class="btn btn-sm btn-danger" onclick="deleteSnapper(${Number(s.number) || 0})">削除</button>
+                  <button class="btn btn-sm btn-primary" onclick="restoreSnapper(${num})">復元</button>
+                  <button class="btn btn-sm btn-danger" onclick="deleteSnapper(${num})">削除</button>
                 </div>
               </td>
               <td style="text-align:center;">
-                <input type="checkbox" class="snapper-del-check" value="${Number(s.number) || 0}" ${Number(s.number) === 0 ? 'disabled title="現在のシステム (#0) は削除できません"' : ''}>
+                <input type="checkbox" class="snapper-del-check" value="${num}" ${num === 0 ? 'disabled title="現在のシステム (#0) は削除できません"' : ''}>
               </td>
-            </tr>`).join('')}
+            </tr>`;}).join('')}
         </tbody>
       </table>
       <p class="muted" style="margin-top:0.5rem;font-size:0.78rem;">削除したいスナップショットにチェックを入れて「一括削除」を押してください（#0 は削除できません）。<a href="#" onclick="toggleSnapperChecks(true);return false;">全選択</a> / <a href="#" onclick="toggleSnapperChecks(false);return false;">全解除</a></p>`;
@@ -2442,7 +2449,13 @@ async function deleteSnapper(number) {
 async function restoreSnapper(number) {
   const sel = document.getElementById('snapper-config-select');
   const config = (sel && sel.value) || 'root';
-  if (!confirm(`スナップショット #${number} に復元しますか？\n\n現在のシステム状態は上書きされます。\n復元後は再起動が必要です。`)) return;
+  let msg = `スナップショット #${number} に復元しますか？\n\n現在のシステム状態は上書きされます。\n復元後は再起動が必要です。`;
+  if (window._snapperBoot) {
+    const bootNote = (window._snapperBootId !== null && window._snapperBootId !== undefined)
+      ? `現在は #${window._snapperBootId} で起動中です。\n` : '';
+    msg = `スナップショット起動中です。\n${bootNote}#${number} の内容でシステムを復元しますか？\n\n現行システムはバックアップとして残し、対応カーネルも復元します。\n復元後は必ず再起動してください（自動では再起動しません）。`;
+  }
+  if (!confirm(msg)) return;
   const statusEl = document.getElementById('snapper-status-msg');
   statusEl.className = 'status-msg show info';
   statusEl.innerHTML = '<span class="spinner"></span> 復元中...';

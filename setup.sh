@@ -128,6 +128,12 @@ cachyui ALL=(ALL) NOPASSWD: /usr/bin/systemctl, \
     /usr/sbin/snapper, \
     /usr/bin/btrfs, \
     /usr/sbin/btrfs, \
+    /usr/bin/limine-snapper-list, \
+    /usr/sbin/limine-snapper-list, \
+    /usr/bin/limine-snapper-restore, \
+    /usr/sbin/limine-snapper-restore, \
+    /usr/sbin/limine-snapper-sync, \
+    /usr/lib/limine/limine-snapper-sync, \
     /usr/bin/ufw, \
     /usr/sbin/ufw, \
     /usr/bin/efibootmgr, \

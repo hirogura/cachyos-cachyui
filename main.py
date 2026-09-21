@@ -107,21 +107,28 @@ async def selfex_status():
 
 
 # --- Helper: run shell command ---
-async def run_cmd(cmd: str, timeout: int = 30, extra_env: dict | None = None) -> dict:
-    """Run a shell command and return stdout, stderr, returncode."""
+async def run_cmd(cmd: str, timeout: int = 30, extra_env: dict | None = None,
+                  stdin_data: str | None = None) -> dict:
+    """Run a shell command and return stdout, stderr, returncode.
+
+    stdin_data を指定すると標準入力に書き込む (対話コマンドの自動応答用)。
+    """
     try:
         env = os.environ.copy()
         env["DEBIAN_FRONTEND"] = "noninteractive"
         if extra_env:
             env.update(extra_env)
 
+        stdin_arg = asyncio.subprocess.PIPE if stdin_data is not None else None
         proc = await asyncio.create_subprocess_shell(
             cmd,
+            stdin=stdin_arg,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        feed = stdin_data.encode("utf-8") if stdin_data is not None else None
+        stdout, stderr = await asyncio.wait_for(proc.communicate(feed), timeout=timeout)
         return {
             "stdout": stdout.decode("utf-8", errors="replace"),
             "stderr": stderr.decode("utf-8", errors="replace"),
@@ -2953,6 +2960,126 @@ async def _snapper_boot_state() -> dict:
     return {"snapshot_boot": snapshot_boot, "fstype_root": fstype}
 
 
+def _snapper_boot_snapshot_id() -> int | None:
+    """起動中のスナップショット ID を /proc/cmdline から求める (通常起動時は None)。
+
+    Limine のスナップショット起動では `rootflags=subvol=/@/.snapshots/<N>/snapshot`
+    のようにカーネルコマンドラインに番号が含まれる (limine-snapper-restore の
+    is_snapshot() と同じ判定)。
+    """
+    try:
+        with open("/proc/cmdline", encoding="utf-8", errors="replace") as f:
+            cmdline = f.read()
+    except OSError:
+        return None
+    m = re.search(r"rootflags.*subvol=.*?/([0-9]+)/snapshot", cmdline)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return None
+
+
+async def _snapper_btrfs_device(extra_targets: list[str] | None = None) -> str:
+    """btrfs ファイルシステムのデバイスパスを求める (top-level マウント用)。
+
+    / が overlayfs のスナップショット起動中でも /home 等は btrfs のままなので、
+    そちらからデバイスを特定できる。`[...]` サフィックス (subvol 表示) は除去する。
+    """
+    targets = list(extra_targets or []) + ["/home", "/.snapshots", "/var/log", "/"]
+    for target in targets:
+        try:
+            d = await run_cmd(f"findmnt -no SOURCE -T {shlex.quote(target)} 2>/dev/null", timeout=5)
+        except Exception:
+            continue
+        if d["returncode"] != 0:
+            continue
+        dev = (d["stdout"] or "").strip().splitlines()
+        dev = dev[0].strip() if dev else ""
+        dev = re.sub(r"\[.*\]$", "", dev).strip()
+        if dev.startswith("/dev/"):
+            return dev
+    return ""
+
+
+async def _snapper_mount_top(device: str, readonly: bool = False) -> tuple[str, bool]:
+    """btrfs の top-level (subvolid=5) を一時マウントする。戻り値は (マウント点, 自前マウントか)。
+
+    既に subvolid=5 でマウントされている場所があればそれを再利用する
+    (既存の _snapper_assistant_restore と同じ方針)。
+    """
+    if not device:
+        return "", False
+    uuid = ""
+    u = await run_cmd(f"findmnt -no UUID -T {shlex.quote(device)} 2>/dev/null", timeout=5)
+    if u["returncode"] != 0:
+        # デバイス直指定で UUID が取れない場合は /home 等の既存マウントから UUID を求める
+        u = await run_cmd("findmnt -no UUID -T /home 2>/dev/null", timeout=5)
+    if u["returncode"] == 0 and (u["stdout"] or "").strip():
+        uuid = u["stdout"].strip().splitlines()[0].strip()
+    if uuid:
+        for opts_cmd in ("findmnt -rn -t btrfs -o UUID,TARGET,OPTIONS 2>/dev/null",
+                         "findmnt -rn -O subvolid=5 -o UUID,TARGET 2>/dev/null"):
+            fm = await run_cmd(opts_cmd, timeout=5)
+            if fm["returncode"] != 0:
+                continue
+            for line in fm["stdout"].splitlines():
+                parts = line.strip().split(None, 2)
+                if len(parts) >= 2 and parts[0] == uuid:
+                    cand = parts[1].strip()
+                    if len(parts) == 2 or "subvolid=5" in parts[2]:
+                        return cand, False
+    try:
+        tmp_dir = tempfile.mkdtemp(prefix="cachyui-btrfs-top-")
+    except Exception:
+        return "", False
+    opts = "subvolid=5,ro" if readonly else "subvolid=5"
+    m = await run_cmd(_sudo(f"mount -t btrfs -o {opts} {shlex.quote(device)} {shlex.quote(tmp_dir)}"), timeout=30)
+    if m["returncode"] != 0:
+        try:
+            os.rmdir(tmp_dir)
+        except OSError:
+            pass
+        return "", False
+    return tmp_dir, True
+
+
+async def _snapper_umount_top(mountpoint: str, owned: bool) -> None:
+    """_snapper_mount_top で自前マウントした場合のみアンマウントする。"""
+    if owned and mountpoint:
+        await run_cmd(_sudo(f"umount {shlex.quote(mountpoint)}"), timeout=30)
+        try:
+            os.rmdir(mountpoint)
+        except OSError:
+            pass
+
+
+def _snapper_top_target_name(subvolume: str) -> str:
+    """snapper の SUBVOLUME (例: /) に対応する top-level 直下の名前 (例: @) を求める。
+
+    /etc/fstab の `subvol=` 指定を優先する (CachyOS 既定: / は subvol=/@)。
+    """
+    mp = (subvolume or "/").rstrip("/") or "/"
+    try:
+        with open("/etc/fstab", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                cols = line.split()
+                if len(cols) < 4:
+                    continue
+                if os.path.normpath(cols[1]) != mp:
+                    continue
+                m = re.search(r"subvol=([^, \t]+)", cols[3])
+                if m:
+                    return m.group(1).strip().lstrip("/")
+    except OSError:
+        pass
+    return "@" if mp == "/" else mp.lstrip("/")
+
+
 def _parse_snapshot_info_xml(text: str) -> dict | None:
     """snapper の info.xml 1件を一覧行 dict に変換する。失敗時は None。"""
     import xml.etree.ElementTree as _et
@@ -3028,8 +3155,51 @@ async def _snapper_list_from_info_xml(cfg: str, subvolume: str = "") -> list[dic
                 snapshots.append(row)
         if snapshots:
             break
+    if not snapshots:
+        # スナップショット起動中は /.snapshots が空スタブの場合があるため、
+        # top-level 直下の <target>/.snapshots から直接読む (例: @/.snapshots)。
+        snapshots = await _snapper_list_from_top_level(subvolume)
     snapshots.sort(key=lambda s: s["number"], reverse=True)
     return snapshots
+
+
+async def _snapper_list_from_top_level(subvolume: str = "") -> list[dict]:
+    """top-level マウント経由で `TARGET/.snapshots/*/info.xml` を読む (読取専用)。
+
+    Limine スナップショット起動中は / が overlayfs かつ /.snapshots が空のため、
+    snapper CLI も直接読みも失敗する。/home 等からデバイスを特定し top-level を
+    ro マウントして一覧を組み立てる。
+    """
+    target = _snapper_top_target_name(subvolume or "/")
+    device = await _snapper_btrfs_device()
+    if not device:
+        return []
+    top, owned = await _snapper_mount_top(device, readonly=True)
+    if not top:
+        return []
+    try:
+        snapdir = os.path.join(top, target, ".snapshots")
+        try:
+            entries = os.listdir(snapdir)
+        except OSError:
+            return []
+        snapshots: list[dict] = []
+        for name in entries:
+            if not name.isdigit():
+                continue
+            info_path = os.path.join(snapdir, name, "info.xml")
+            try:
+                with open(info_path, encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+            except OSError:
+                continue
+            row = _parse_snapshot_info_xml(text)
+            if row is not None and all(s["number"] != row["number"] for s in snapshots):
+                snapshots.append(row)
+        snapshots.sort(key=lambda s: s["number"], reverse=True)
+        return snapshots
+    finally:
+        await _snapper_umount_top(top, owned)
 
 
 async def _snapper_list_configs() -> list[dict]:
@@ -3106,9 +3276,11 @@ async def snapper_snapshots(config: str = "root"):
         else:
             snapshots.sort(key=lambda s: s["number"], reverse=True)
             return {"config": cfg, "snapshots": snapshots, "count": len(snapshots),
-                    "snapshot_boot": False, "fallback": False}
+                    "snapshot_boot": False, "fallback": False,
+                    "boot_snapshot": None}
     # フォールバック: スナップショット起動中 (overlay) の可能性を確認する
     boot = await _snapper_boot_state()
+    boot_id = _snapper_boot_snapshot_id()
     subvolume = ""
     try:
         subvolume = await _snapper_get_subvolume(cfg)
@@ -3120,9 +3292,12 @@ async def snapper_snapshots(config: str = "root"):
                "スナップショット情報を直接読み取って表示しています。")
         if boot.get("fstype_root"):
             msg += f" (/: {boot['fstype_root']})"
-        msg += " 復元・削除を行う場合は通常起動に戻すか、端末で limine-snapper-restore / Btrfs Assistant を利用してください。"
+        if boot_id is not None:
+            msg += f" 現在 #{boot_id} で起動中です。"
+        msg += " このまま「復元」で起動中のスナップショットをシステムに反映できます (GUIなしでも可)。"
         return {"config": cfg, "snapshots": fb, "count": len(fb),
-                "snapshot_boot": True, "fallback": True, "warning": msg}
+                "snapshot_boot": True, "fallback": True, "warning": msg,
+                "boot_snapshot": boot_id}
     if _snapper_is_btrfs_error(raw_output) or boot.get("snapshot_boot"):
         fstype = boot.get("fstype_root") or "btrfs 以外"
         raise HTTPException(
@@ -3336,17 +3511,13 @@ async def snapper_restore(req: Request):
     data = await _get_json(req)
     cfg = _validate_snapper_config(data.get("config", "root"))
     number = _validate_snapshot_number(data.get("number"))
-    # スナップショット起動中 (overlay) は / が btrfs ではないため置換復元は行わない
+    # スナップショット起動中 (overlay・GUIなし含む) は専用の置換復元で対応する
     try:
         boot = await _snapper_boot_state()
     except Exception:
         boot = {}
     if boot.get("snapshot_boot"):
-        fstype = boot.get("fstype_root") or "btrfs 以外"
-        return {"success": False,
-                "message": (f"スナップショット起動中のため cachy-UI からは復元できません (/: {fstype})。"
-                            f"スナップショット #{number} の復元は、表示中のデスクトップ通知「Restore now」から行うか、"
-                            "端末で limine-snapper-restore / Btrfs Assistant を利用してください。")}
+        return await _snapper_snapshot_boot_restore(cfg, number)
     # Btrfs Assistant と同じ動作: top-level にマウントして rename + btrfs snapshot で置換する。
     # snapper rollback は ambit/既定サブボリューム未設定等で失敗する (`--ambit` エラー) ため先にこちらを試す。
     manual = await _snapper_assistant_restore(cfg, number)
@@ -3374,6 +3545,249 @@ async def snapper_restore(req: Request):
     if out:
         msg += f"\n{out}"
     return {"success": True, "message": msg}
+
+
+LIMINE_RESTORE_LOCKFILE = "/run/lock/limine-snapper-restore.lock"
+LIMINE_SYNC_BIN_CANDIDATES = (
+    "/usr/lib/limine/limine-snapper-sync",
+    "/usr/sbin/limine-snapper-sync",
+    "/usr/bin/limine-snapper-sync",
+)
+
+
+def _snapper_restore_method() -> str:
+    """limine-snapper-sync の RESTORE_METHOD を読む (既定は replace)。"""
+    method = ""
+    for path in ("/etc/default/limine", "/etc/limine-snapper-sync.conf",
+                 "/tmp/limine-snapper-sync.conf"):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    s = line.strip()
+                    if not s or s.startswith("#"):
+                        continue
+                    m = re.match(r"RESTORE_METHOD\s*=\s*(.+?)\s*$", s)
+                    if m:
+                        method = m.group(1).strip().strip("\"'").lower()
+        except OSError:
+            continue
+    return method or "replace"
+
+
+def _snapper_sync_bin() -> str:
+    """カーネル復元に使う limine-snapper-sync 実体 (Java バイナリ) を探す。"""
+    for p in LIMINE_SYNC_BIN_CANDIDATES:
+        try:
+            if os.path.isfile(p) and os.access(p, os.X_OK):
+                # ラッパースクリプトではなく実体 (ELF) を優先する。
+                # ラッパー経由だと最後に再起動プロンプトが出て Web 経由では扱えないため。
+                with open(p, "rb") as f:
+                    if f.read(4) == b"\x7fELF":
+                        return p
+        except OSError:
+            continue
+    for p in LIMINE_SYNC_BIN_CANDIDATES:
+        try:
+            if os.path.isfile(p) and os.access(p, os.X_OK):
+                return p
+        except OSError:
+            continue
+    return ""
+
+
+async def _snapper_limine_snapshot_ids() -> set[int] | None:
+    """Limine ブートメニューにあるスナップショット ID 一覧。取得不能時は None。"""
+    r = await run_cmd(_sudo("limine-snapper-list 2>/dev/null"), timeout=30)
+    if r["returncode"] != 0:
+        return None
+    ids: set[int] = set()
+    for line in (r["stdout"] or "").splitlines():
+        s = line.strip()
+        if not s or set(s) <= set("-+| "):
+            continue
+        first = re.split(r"[| \t]+", s)[0].strip()
+        if first.isdigit():
+            # ヘッダ行 ("ID") は isdigit() で除外される
+            ids.add(int(first))
+    return ids
+
+
+async def _snapper_snapshot_boot_restore(cfg: str, number: int) -> dict:
+    """スナップショット起動中 (overlay) からの復元 (GUIなし・ヘッドレス対応)。
+
+    limine-snapper-restore の replace 方式と同等: top-level にマウントして
+    現行 @ を退避し、指定スナップショットから新しい @ を作り、子サブボリューム
+    (.snapshots 等) を移行した後、対応カーネルを ESP に戻す。
+    自動リブートはしない (呼び出し側が再起動する)。
+    """
+    if number == 0:
+        return {"success": False,
+                "message": "スナップショット #0 (現在のシステム) への復元はできません。復元したい番号を指定してください。"}
+    boot_id = _snapper_boot_snapshot_id()
+    subvol_abs = await _snapper_get_subvolume(cfg) or "/"
+    target = _snapper_top_target_name(subvol_abs)
+
+    method = _snapper_restore_method()
+    if method not in ("replace",):
+        return {"success": False,
+                "message": (f"スナップショット #{number} への復元に失敗しました: "
+                            f"RESTORE_METHOD={method} には未対応です (cachy-UI は replace 方式のみ対応)。"
+                            "端末で limine-snapper-restore を利用してください。")}
+    if os.path.exists(LIMINE_RESTORE_LOCKFILE):
+        return {"success": False,
+                "message": (f"スナップショット #{number} への復元に失敗しました: "
+                            "他の復元処理が実行中です。完了を待ってから再試行してください。")}
+    sync_bin = _snapper_sync_bin()
+    if not sync_bin:
+        return {"success": False,
+                "message": (f"スナップショット #{number} への復元に失敗しました: "
+                            "limine-snapper-sync が見つかりません。端末で limine-snapper-restore を利用してください。")}
+    device = await _snapper_btrfs_device([subvol_abs, "/.snapshots"])
+    if not device:
+        return {"success": False,
+                "message": f"スナップショット #{number} への復元に失敗しました: btrfs デバイスを特定できません。"}
+    top, owned = await _snapper_mount_top(device, readonly=False)
+    if not top:
+        return {"success": False,
+                "message": f"スナップショット #{number} への復元に失敗しました: btrfs の top-level をマウントできません。"}
+
+    async def _cleanup():
+        await _snapper_umount_top(top, owned)
+
+    try:
+        tgt_top = os.path.join(top, target)
+        t = await run_cmd(_sudo(f"test -d {shlex.quote(tgt_top)}"), timeout=5)
+        if t["returncode"] != 0:
+            await _cleanup()
+            return {"success": False,
+                    "message": f"スナップショット #{number} への復元に失敗しました: {target} が見つかりません。"}
+        snap_rel = f"{target}/.snapshots/{number}/snapshot"
+        snap_src = os.path.join(top, snap_rel)
+        sv = await run_cmd(_sudo(f"btrfs subvolume show {shlex.quote(snap_src)} 2>/dev/null"), timeout=10)
+        if sv["returncode"] != 0:
+            await _cleanup()
+            return {"success": False,
+                    "message": (f"スナップショット #{number} への復元に失敗しました: "
+                                f"{snap_rel} が見つかりません。番号を確認してください。")}
+        target_id = await _btrfs_rootid(tgt_top)
+        if not target_id:
+            await _cleanup()
+            return {"success": False,
+                    "message": f"スナップショット #{number} への復元に失敗しました: {target} の情報を取得できません。"}
+        if target_id == 5:
+            await _cleanup()
+            return {"success": False,
+                    "message": f"スナップショット #{number} への復元に失敗しました: パーティション直下には復元できません。"}
+
+        lst = await run_cmd(_sudo(f"btrfs subvolume list -p {shlex.quote(top)} 2>/dev/null"), timeout=30)
+        if lst["returncode"] != 0:
+            lst = await run_cmd(_sudo(f"btrfs subvolume list {shlex.quote(top)} 2>/dev/null"), timeout=30)
+        if lst["returncode"] != 0:
+            await _cleanup()
+            return {"success": False,
+                    "message": f"スナップショット #{number} への復元に失敗しました: サブボリューム一覧を取得できません。"}
+        id_to_path, id_to_parent = _parse_btrfs_subvolume_list(lst["stdout"])
+        children = [p for sid, p in id_to_path.items() if id_to_parent.get(sid) == target_id]
+
+        # バックアップ名は衝突しないものにする
+        stamp = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+        backup_name = f"{target}_backup_{stamp}"
+        for _ in range(5):
+            ex = await run_cmd(_sudo(f"test -e {shlex.quote(os.path.join(top, backup_name))}"), timeout=5)
+            if ex["returncode"] != 0:
+                break
+            backup_name += "_r"
+        src_top = os.path.join(top, target)
+        dst_top = os.path.join(top, backup_name)
+        parent_dir = os.path.dirname(dst_top)
+        await run_cmd(_sudo(f"mkdir -p {shlex.quote(parent_dir)}"), timeout=10)
+
+        mv1 = await run_cmd(_sudo(f"mv -T {shlex.quote(src_top)} {shlex.quote(dst_top)}"), timeout=120)
+        if mv1["returncode"] != 0:
+            err = ((mv1["stderr"] or "") + (mv1["stdout"] or "")).strip()
+            await _cleanup()
+            return {"success": False,
+                    "message": f"スナップショット #{number} への復元に失敗しました: 現行ボリュームの退避に失敗しました: {err}"}
+
+        source_id_path = id_to_path.get(await _btrfs_rootid(snap_src) or -1, snap_rel)
+        if source_id_path == target or source_id_path.startswith(target.rstrip("/") + "/"):
+            new_source = backup_name + source_id_path[len(target):]
+        else:
+            new_source = source_id_path
+        snap_src_now = os.path.join(top, new_source)
+        snap_dst = os.path.join(top, target)
+        sn = await run_cmd(_sudo(f"btrfs subvolume snapshot {shlex.quote(snap_src_now)} {shlex.quote(snap_dst)}"), timeout=180)
+        if sn["returncode"] != 0:
+            err = ((sn["stderr"] or "") + (sn["stdout"] or "")).strip()
+            await run_cmd(_sudo(f"mv -T {shlex.quote(dst_top)} {shlex.quote(src_top)}"), timeout=120)
+            await _cleanup()
+            return {"success": False,
+                    "message": f"スナップショット #{number} への復元に失敗しました: スナップショットのコピーに失敗しました: {err}"}
+
+        # 子サブボリュームを新ボリュームへ移行 (.snapshots 等)
+        child_warnings: list[str] = []
+        prefix = target.rstrip("/") + "/"
+        for child in children:
+            if not child.startswith(prefix):
+                continue
+            rel = child[len(prefix):]
+            old_path = os.path.join(top, backup_name, rel)
+            new_path = os.path.join(top, child)
+            ex = await run_cmd(_sudo(f"test -e {shlex.quote(old_path)}"), timeout=5)
+            if ex["returncode"] != 0:
+                continue
+            is_sub = await run_cmd(_sudo(f"btrfs subvolume show {shlex.quote(new_path)} 2>/dev/null"), timeout=10)
+            if is_sub["returncode"] == 0:
+                await run_cmd(_sudo(f"btrfs subvolume delete {shlex.quote(new_path)}"), timeout=60)
+            else:
+                await run_cmd(_sudo(f"rmdir {shlex.quote(new_path)} 2>/dev/null"), timeout=10)
+            mv = await run_cmd(_sudo(f"mv -T {shlex.quote(old_path)} {shlex.quote(new_path)}"), timeout=120)
+            if mv["returncode"] != 0:
+                err = ((mv["stderr"] or "") + (mv["stdout"] or "")).strip()
+                child_warnings.append(f"{rel}: {err}")
+
+        fstab_warn = ""
+        fb = await run_cmd("grep -E 'subvolid=' /etc/fstab 2>/dev/null", timeout=5)
+        if fb["returncode"] == 0 and (fb["stdout"] or "").strip():
+            fstab_warn = "\n注意: /etc/fstab で subvolid 指定のマウントが検出されました。subvol=@ 等のパス指定に切替えていないと次回起動時に復元が反映されない場合があります。"
+
+        # カーネル復元: 事前に Limine 一覧にあることを確認してから実体バイナリを呼ぶ。
+        # ラッパー (limine-snapper-restore) は最後に再起動プロンプトを出すため、
+        # Web 経由では実体バイナリを直接呼び、自動リブートはしない。
+        kernel_warn = ""
+        lim_ids = await _snapper_limine_snapshot_ids()
+        if lim_ids is not None and number not in lim_ids:
+            kernel_warn = (f"\n警告: スナップショット #{number} に対応するカーネルが Limine ブートメニューにないため、"
+                           "カーネルは復元していません。起動後にカーネル不一致で起動できない場合は Live USB から "
+                           "cachy-chroot + limine-update (またはカーネル再インストール) を行ってください。")
+        else:
+            kr = await run_cmd(
+                _sudo(f"{shlex.quote(sync_bin)} --restore-kernels {number}"),
+                timeout=300, stdin_data="n\n",
+            )
+            kr_out = ((kr.get("stdout") or "") + "\n" + (kr.get("stderr") or "")).strip()
+            if kr["returncode"] != 0:
+                tail = kr_out[-1500:] if kr_out else "詳細不明"
+                kernel_warn = (f"\n警告: カーネルの復元に失敗しました。起動後に問題が出る場合は端末で "
+                               f"`sudo limine-snapper-restore --kernels {number}` を実行してください。\n{tail}")
+
+        await _cleanup()
+        msg = (f"スナップショット #{number} を復元しました (Limine replace 方式・カーネル復元付き)。\n"
+               f"元のボリュームは {backup_name} として保存されています。\n"
+               f"必ず再起動してください (自動では再起動しません)。{fstab_warn}")
+        if boot_id is not None and boot_id != number:
+            msg += f"\n注意: 現在は #{boot_id} で起動中ですが、#{number} の内容で復元しました。"
+        if child_warnings:
+            msg += "\n警告: 一部のネストされたサブボリュームの移行に失敗しました (手動で移行してください):\n" + "\n".join(child_warnings)
+        if kernel_warn:
+            msg += kernel_warn
+        return {"success": True, "message": msg}
+    except Exception as e:
+        try:
+            await _cleanup()
+        except Exception:
+            pass
+        return {"success": False, "message": f"スナップショット #{number} への復元に失敗しました: {e}"}
 
 
 def _parse_btrfs_subvolume_list(stdout: str) -> tuple[dict[int, str], dict[int, int]]:
