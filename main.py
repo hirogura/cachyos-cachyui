@@ -1890,12 +1890,17 @@ async def backup_run(req: Request):
     bootdev, rel = await _resolve_limine_conf_device()
     if bootdev:
         if mode == "backup":
-            # 完了後の通常起動は linux-cachyos (無ければ元の default) に戻す
-            # 追加でエントリ番号がズレるため、番号ではなくタイトル指定を優先する
-            if _limine_find_index_by_title(lines, "linux-cachyos") is not None:
-                rdef, rhad = "linux-cachyos", True
+            # 完了後の通常起動は linux-cachyos のフルパス (例: CachyOS/linux-cachyos) に戻す。
+            # 素のタイトルだけだと何にもマッチせず自動起動が無効化され、
+            # ディレクトリ CachyOS で選択停止するため (v2.5.2 修正)。
+            # 追加でエントリ番号がズレるため、番号ではなくパス指定を優先する。
+            # 無ければ元の default をパス正規化して使う。
+            normal_path = _limine_find_entry_path_by_title(lines, "linux-cachyos")
+            if normal_path is not None:
+                rdef, rhad = normal_path, True
             else:
-                rdef, rhad = orig_default, had_default
+                resolved = _limine_resolve_default_to_path(lines, orig_default)
+                rdef, rhad = (resolved, True) if resolved else (orig_default, had_default)
             # remember を no に固定するため、元の値へ戻す片も同梱する
             revert = _build_default_revert_cmd(
                 rdef, rhad, bootdev, rel,
@@ -1903,9 +1908,12 @@ async def backup_run(req: Request):
             )
         else:
             # 復元時も remember_last_entry が default_entry より優先されるため、
-            # 一時的に no 化した分を ocs_prerun で元に戻す
+            # 一時的に no 化した分を ocs_prerun で元に戻す。
+            # 素タイトルの場合はフルパスに正規化する (v2.5.2)。
+            resolved = _limine_resolve_default_to_path(lines, orig_default)
+            rdef, rhad = (resolved, True) if resolved else (orig_default, had_default)
             revert = _build_default_revert_cmd(
-                orig_default, had_default, bootdev, rel,
+                rdef, rhad, bootdev, rel,
                 revert_remember=True, orig_remember=orig_remember, had_remember=had_remember,
             )
     # 解決できない場合は revert なし (復元は /boot 上書きで自然に戻る / バックアップは手動選択にフォールバック)
@@ -1943,9 +1951,10 @@ async def backup_run(req: Request):
             )
         else:
             # limine.conf のデバイスを特定できない場合は従来どおり手動選択にフォールバック
-            title_idx = _limine_find_index_by_title(lim_lines, "linux-cachyos")
-            if title_idx is not None:
-                await _limine_set_default(str(title_idx))
+            # (通常起動先だけはフルパスで戻しておく)
+            fallback_path = _limine_find_entry_path_by_title(lim_lines, "linux-cachyos")
+            if fallback_path is not None:
+                await _limine_set_default(fallback_path)
             await _limine_set_remember("no")
             message = (
                 f"{summary}\n準備完了 (自動1回起動は limine.conf のデバイス特定に失敗したため手動選択)。"
@@ -2333,6 +2342,65 @@ def _limine_find_index_by_title(lines: list[str], title: str) -> int | None:
         if name == title:
             return idx
     return None
+
+
+def _limine_entry_depth(stripped: str) -> int:
+    """先頭 '/' の数 (= Limine の階層深度) を返す。"""
+    n = 0
+    for ch in stripped:
+        if ch == "/":
+            n += 1
+        else:
+            break
+    return n
+
+
+def _limine_find_entry_path_by_title(lines: list[str], title: str) -> str | None:
+    """タイトルから default_entry 用フルパス (例: CachyOS/linux-cachyos) を求める。
+
+    Limine CONFIG.md では default_entry のパス指定は「ディレクトリ/サブエントリ」
+    形式であり、サブエントリを素のタイトル (例: linux-cachyos) だけで指定すると
+    何にもマッチせず自動起動が無効化される (ディレクトリ CachyOS で選択停止する)。
+    そのため復帰先は必ずフルパスで指定する必要がある。
+    """
+    stack: list[str] = []
+    top_match: str | None = None
+    for line in lines:
+        stripped = line.lstrip()
+        if not stripped.startswith("/"):
+            continue
+        depth = _limine_entry_depth(stripped)
+        if depth < 1:
+            continue
+        name = stripped[depth:].lstrip("+").strip()
+        while len(stack) >= depth:
+            stack.pop()
+        stack.append(name)
+        if name != title:
+            continue
+        if len(stack) >= 2:
+            # サブエントリはフルパスで返す (最優先)
+            return "/".join(_limine_escape_path_component(p) for p in stack)
+        if top_match is None:
+            top_match = _limine_escape_path_component(name)
+    return top_match
+
+
+def _limine_resolve_default_to_path(lines: list[str], value: str | None) -> str | None:
+    """既存 default_entry 値を自動起動可能な形式に正規化する。
+
+    数値・スラッシュ付きパスはそのまま維持する (数値は末尾追記方式のためズレない)。
+    素のタイトルがサブエントリ名と一致する場合はフルパスに変換する。
+    """
+    if value is None:
+        return None
+    v = value.strip()
+    if not v:
+        return None
+    if v.isdigit() or "/" in v:
+        return v
+    path = _limine_find_entry_path_by_title(lines, v)
+    return path or v
 
 
 def _limine_escape_path_component(name: str) -> str:
