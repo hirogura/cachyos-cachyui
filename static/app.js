@@ -1291,6 +1291,10 @@ async function loadLimine() {
     renderLimineDelList(data.iso_boot_entries || []);
     const defInput = document.getElementById('limine-default-input');
     if (defInput && !defInput.value && data.default_entry) defInput.value = data.default_entry;
+    const timeoutSel = document.getElementById('limine-timeout-select');
+    if (timeoutSel && data.timeout && /^[1-9]$|^10$/.test(String(data.timeout).trim())) {
+      timeoutSel.value = String(data.timeout).trim();
+    }
   } catch (e) {
     if (statusMsg) {
       statusMsg.className = 'status-msg show error';
@@ -1308,6 +1312,7 @@ function renderLimineSettings(d) {
       <tbody>
         <tr><td style="color:var(--text-muted);">設定ファイル</td><td><b>${escapeHtml(d.conf || '/boot/limine.conf')}</b></td></tr>
         <tr><td style="color:var(--text-muted);">default_entry</td><td><b>${escapeHtml(d.default_entry ?? '未設定')}</b></td></tr>
+        <tr><td style="color:var(--text-muted);">timeout (表示時間)</td><td><b>${d.timeout ? escapeHtml(String(d.timeout)) + '秒' : '未設定'}</b></td></tr>
         <tr><td style="color:var(--text-muted);">remember_last_entry</td><td><b>${escapeHtml(d.remember_last_entry ?? '未設定')}</b></td></tr>
         <tr><td style="color:var(--text-muted);">/iso マウント</td><td><b>${d.iso_mounted ? `あり (${escapeHtml(d.iso_source || '')} / ${escapeHtml(d.iso_fstype || '')} / ${escapeHtml(d.iso_size || '')})` : 'なし'}</b></td></tr>
       </tbody>
@@ -1476,6 +1481,25 @@ async function setLimineDefault() {
     });
     const data = await resp.json();
     if (el) { el.className = `status-msg show ${data.success ? 'success' : 'error'}`; el.textContent = data.message || ''; }
+    if (data.success) loadLimine();
+  } catch (e) {
+    if (el) { el.className = 'status-msg show error'; el.textContent = `エラー: ${e.message}`; }
+  }
+}
+
+async function setLimineTimeout() {
+  const sel = document.getElementById('limine-timeout-select');
+  const el = document.getElementById('limine-timeout-status');
+  const value = (sel && sel.value || '').trim();
+  if (!/^(10|[1-9])$/.test(value)) { if (el) { el.className = 'status-msg show error'; el.textContent = '1〜10秒の範囲で選択してください'; } return; }
+  if (!confirm(`表示時間 (timeout) を「${value}秒」に設定しますか？`)) return;
+  try {
+    const resp = await fetch('/api/limine/timeout', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value }),
+    });
+    const data = await resp.json();
+    if (el) { el.className = `status-msg show ${data.success ? 'success' : 'error'}`; el.textContent = data.message || data.detail || ''; }
     if (data.success) loadLimine();
   } catch (e) {
     if (el) { el.className = 'status-msg show error'; el.textContent = `エラー: ${e.message}`; }

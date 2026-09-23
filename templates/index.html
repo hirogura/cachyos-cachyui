@@ -17,7 +17,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       </div>
       <div class="logo-info">
-        <span class="logo-text">cachy-UI<span class="logo-version">v.2.5.3</span></span>
+        <span class="logo-text">cachy-UI<span class="logo-version">v.2.5.4</span></span>
         <span class="logo-hostname" id="sidebar-hostname">...</span>
       </div>
     </div>
@@ -401,6 +401,29 @@
         </div>
       </div>
 
+      <h2>Limine表示時間</h2>
+      <div class="stat-card" style="margin-bottom:1rem;">
+        <div class="form-group">
+          <label for="limine-timeout-select">表示時間 (timeout)</label>
+          <select id="limine-timeout-select" style="width:100%;margin-top:0.25rem;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;">
+            <option value="1">1秒</option>
+            <option value="2">2秒</option>
+            <option value="3">3秒</option>
+            <option value="4">4秒</option>
+            <option value="5">5秒</option>
+            <option value="6">6秒</option>
+            <option value="7">7秒</option>
+            <option value="8">8秒</option>
+            <option value="9">9秒</option>
+            <option value="10">10秒</option>
+          </select>
+        </div>
+        <div id="limine-timeout-status" class="status-msg"></div>
+        <div style="display:flex;justify-content:flex-end;">
+          <button class="btn btn-primary" onclick="setLimineTimeout()">表示時間を設定</button>
+        </div>
+      </div>
+
       <h2>CachyOS ISOダウンロード</h2>
       <div class="stat-card" style="margin-bottom:1rem;">
         <p class="muted" style="margin-bottom:0.75rem;">build.cachyos.org ミラーから CachyOS の ISO を選択してダウンロードします（/iso に保存）。</p>
@@ -700,6 +723,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=37"></script>
+  <script src="/static/app.js?v=38"></script>
 </body>
 </html>

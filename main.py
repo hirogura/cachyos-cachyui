@@ -2319,6 +2319,31 @@ async def _limine_set_remember(value: str) -> tuple[bool, str]:
     return await _limine_flush_lines(lines)
 
 
+def _limine_get_timeout(lines: list[str]) -> str | None:
+    """Limine表示時間 (timeout) を取得する。"""
+    for line in lines:
+        m = re.match(r"^\s*timeout\s*:\s*(.+?)\s*(?:#.*)?$", line, re.I)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
+async def _limine_set_timeout(value: str) -> tuple[bool, str]:
+    """Limine表示時間 (timeout) を設定する。"""
+    lines = await _limine_load_lines()
+    if lines is None:
+        return False, f"{LIMINE_CONF} を読み取れませんでした"
+    done = False
+    for i, line in enumerate(lines):
+        if re.match(r"^\s*timeout\s*:", line, re.I):
+            lines[i] = f"timeout: {value}"
+            done = True
+            break
+    if not done:
+        lines.insert(0, f"timeout: {value}")
+    return await _limine_flush_lines(lines)
+
+
 def _limine_find_index_by_stub(lines: list[str], stub: str) -> int | None:
     idx = 0
     for line in lines:
@@ -2646,6 +2671,7 @@ async def limine_info():
         if m:
             remember = m.group(1).strip()
             break
+    timeout_val = _limine_get_timeout(lines)
     hdr = _limine_find_section(lines)
     iso_entries: list[str] = []
     if hdr >= 0:
@@ -2660,6 +2686,7 @@ async def limine_info():
         "default_entry": default_val,
         "has_default": has_default,
         "remember_last_entry": remember,
+        "timeout": timeout_val,
         "iso_boot_entries": iso_entries,
         "iso_mounted": mnt["returncode"] == 0,
         "iso_source": fields[0] if len(fields) > 0 else None,
@@ -2766,6 +2793,20 @@ async def limine_set_default(req: Request):
     if not ok:
         return {"success": False, "message": f"default_entry の変更に失敗しました: {err}"}
     return {"success": True, "message": f"default_entry を {value} に設定しました\nバックアップ: {bak}"}
+
+
+@app.post("/api/limine/timeout")
+async def limine_set_timeout(req: Request):
+    """Limine表示時間 (timeout) を設定する (1〜10秒)。"""
+    data = await _get_json(req)
+    value = str(data.get("value", "")).strip()
+    if not re.fullmatch(r"[1-9]|10", value):
+        raise HTTPException(status_code=400, detail="timeout は 1〜10 の秒数を指定してください")
+    bak = await _limine_backup()
+    ok, err = await _limine_set_timeout(value)
+    if not ok:
+        return {"success": False, "message": f"timeout の変更に失敗しました: {err}"}
+    return {"success": True, "message": f"表示時間を {value} 秒に設定しました\nバックアップ: {bak}"}
 
 
 # --- ISO ダウンロード (Limine /iso 用・汎用) ---
