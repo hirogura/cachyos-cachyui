@@ -1791,8 +1791,16 @@ async def _resolve_limine_conf_device() -> tuple[str | None, str]:
     return dev, rel
 
 
-def _build_default_revert_cmd(orig_default: str | None, had_default: bool, bootdev: str, rel: str) -> str:
-    """ocs_prerun 先頭で default_entry を元に戻すシェル片を生成する。"""
+def _build_default_revert_cmd(
+    orig_default: str | None,
+    had_default: bool,
+    bootdev: str,
+    rel: str,
+    revert_remember: bool = False,
+    orig_remember: str | None = None,
+    had_remember: bool = False,
+) -> str:
+    """ocs_prerun 先頭で default_entry (と必要なら remember_last_entry) を元に戻すシェル片を生成する。"""
     # 本家lib.shと同じく、準備時に解決したデバイスをリテラルで埋め込む。
     # Live実行中に findmnt すると overlay が返りマウントに失敗するため、動的解決はしない。
     _validate_block_device(bootdev)
@@ -1800,21 +1808,27 @@ def _build_default_revert_cmd(orig_default: str | None, had_default: bool, bootd
     if not rel or ".." in rel.split("/") or any(ch in rel for ch in ("'", '"', "`", "\\", "\n", "\r", "$", ";", "&", "|", "<", ">")):
         raise HTTPException(status_code=500, detail="limine.conf の相対パスを特定できませんでした")
     target = f"/mnt/{rel}"
+    cmds: list[str] = []
     if had_default and orig_default:
         safe = orig_default.replace("'", "'\\''")
-        sed_cmd = f"sed -i 's|^[[:space:]]*default_entry:.*|default_entry: {safe}|' {target}"
+        cmds.append(f"sed -i 's|^[[:space:]]*default_entry:.*|default_entry: {safe}|' {target}")
     else:
-        sed_cmd = f"sed -i '/^[[:space:]]*default_entry:/d' {target}"
-    return f"mount -o rw {shlex.quote(bootdev)} /mnt && " + sed_cmd + " ; umount /mnt"
+        cmds.append(f"sed -i '/^[[:space:]]*default_entry:/d' {target}")
+    if revert_remember:
+        if had_remember and orig_remember:
+            safe_r = orig_remember.replace("'", "'\\''")
+            cmds.append(f"sed -i 's|^[[:space:]]*remember_last_entry:.*|remember_last_entry: {safe_r}|' {target}")
+        else:
+            cmds.append(f"sed -i '/^[[:space:]]*remember_last_entry:/d' {target}")
+    return f"mount -o rw {shlex.quote(bootdev)} /mnt && " + " && ".join(cmds) + " ; umount /mnt"
 
 
 @app.post("/api/backup/run")
 async def backup_run(req: Request):
     """Limine 方式で無人 Clonezilla 実行エントリを準備する。
 
-    バックアップ時は default を linux-cachyos に固定 + remember 無効化し、
-    手動で「ISO Boot > Clonezilla-AutoBackup」を選択して実行する。
-    復元時は default を AutoRestore に一時設定し、ocs_prerun 先頭で元に戻す。
+    次回1回のみ AutoBackup/AutoRestore を既定起動し、ocs_prerun 先頭で
+    default_entry (バックアップ時は remember_last_entry も) を元に戻す。
     """
     data = await _get_json(req)
     mode = data.get("mode", "").strip()
@@ -1870,13 +1884,26 @@ async def backup_run(req: Request):
     if lines is None:
         raise HTTPException(status_code=500, detail="/boot/limine.conf を読み取れませんでした")
     orig_default, had_default = _limine_get_default(lines)
+    orig_remember, had_remember = _limine_get_remember(lines)
 
     revert = ""
-    if mode == "restore":
-        bootdev, rel = await _resolve_limine_conf_device()
-        if bootdev:
+    bootdev, rel = await _resolve_limine_conf_device()
+    if bootdev:
+        if mode == "backup":
+            # 完了後の通常起動は linux-cachyos (無ければ元の default) に戻す
+            # 追加でエントリ番号がズレるため、番号ではなくタイトル指定を優先する
+            if _limine_find_index_by_title(lines, "linux-cachyos") is not None:
+                rdef, rhad = "linux-cachyos", True
+            else:
+                rdef, rhad = orig_default, had_default
+            # remember を no に固定するため、元の値へ戻す片も同梱する
+            revert = _build_default_revert_cmd(
+                rdef, rhad, bootdev, rel,
+                revert_remember=True, orig_remember=orig_remember, had_remember=had_remember,
+            )
+        else:
             revert = _build_default_revert_cmd(orig_default, had_default, bootdev, rel)
-        # 解決できない場合は revert なし (復元で /boot が上書きされれば自然に戻る)
+    # 解決できない場合は revert なし (復元は /boot 上書きで自然に戻る / バックアップは手動選択にフォールバック)
 
     cmdline = _build_ocs_cmdline(base_cmd, device, ocs_run, revert)
     entry = (
@@ -1894,21 +1921,30 @@ async def backup_run(req: Request):
     if not ok:
         raise HTTPException(status_code=500, detail=f"limine.confへの書き込みに失敗しました: {err}")
 
+    lim_lines = await _limine_load_lines() or []
+    auto_idx = _limine_find_index_by_stub(lim_lines, stub)
     if mode == "backup":
-        # 前回起動エントリの記憶を無効化し、既定を linux-cachyos に固定
-        lim_lines = await _limine_load_lines() or []
-        title_idx = _limine_find_index_by_title(lim_lines, "linux-cachyos")
-        if title_idx is not None:
-            await _limine_set_default(str(title_idx))
-        await _limine_set_remember("no")
-        message = (
-            f"{summary}\n準備完了。再起動後の Limine メニューで「ISO Boot > {stub}」を手動選択すると "
-            f"Clonezilla Live が自動処理します\n対象: {target_str}\n"
-            f"(既定を linux-cachyos に固定し、remember_last_entry を無効化しました)"
-        )
+        if auto_idx is not None and revert:
+            # 次回1回のみ AutoBackup を既定にし、Live 内 ocs_prerun で通常設定へ戻す
+            await _limine_set_default(str(auto_idx))
+            await _limine_set_remember("no")
+            message = (
+                f"{summary}\n準備完了。再起動すると「ISO Boot > {stub}」が自動起動され、Clonezilla Live が "
+                f"自動バックアップします (完了時に default_entry を linux-cachyos 等へ戻してから再起動します)\n"
+                f"対象: {target_str}\n(remember_last_entry は一時的に no に設定)"
+            )
+        else:
+            # limine.conf のデバイスを特定できない場合は従来どおり手動選択にフォールバック
+            title_idx = _limine_find_index_by_title(lim_lines, "linux-cachyos")
+            if title_idx is not None:
+                await _limine_set_default(str(title_idx))
+            await _limine_set_remember("no")
+            message = (
+                f"{summary}\n準備完了 (自動1回起動は limine.conf のデバイス特定に失敗したため手動選択)。"
+                f"再起動後の Limine メニューで「ISO Boot > {stub}」を手動選択すると "
+                f"Clonezilla Live が自動処理します\n対象: {target_str}"
+            )
     else:
-        lim_lines = await _limine_load_lines() or []
-        auto_idx = _limine_find_index_by_stub(lim_lines, stub)
         if auto_idx is not None:
             await _limine_set_default(str(auto_idx))
         message = (
@@ -2221,6 +2257,14 @@ def _limine_parse_entries(lines: list[str]) -> list[dict]:
 def _limine_get_default(lines: list[str]) -> tuple[str | None, bool]:
     for line in lines:
         m = re.match(r"^\s*default_entry\s*:\s*(.+?)\s*(?:#.*)?$", line, re.I)
+        if m:
+            return m.group(1).strip(), True
+    return None, False
+
+
+def _limine_get_remember(lines: list[str]) -> tuple[str | None, bool]:
+    for line in lines:
+        m = re.match(r"^\s*remember_last_entry\s*:\s*(.+?)\s*(?:#.*)?$", line, re.I)
         if m:
             return m.group(1).strip(), True
     return None, False

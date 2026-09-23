@@ -51,8 +51,7 @@ Webベースの CachyOS 管理ツール。Tailscale内のHTTPS経由でアクセ
 - 事前に**保存用パーティション**を用意し、**`/iso` にマウント**しておく必要があります ([create-isopart](https://github.com/hirogura/create-isopart.git) 推奨)
 - `clonezilla-live-*.iso` を `/iso` 直下に配置しておきます
 - イメージ名は `cachyos-YYYY-MM-DD` (同日実行済みなら時刻付き)
-- バックアップ時: 既定を `linux-cachyos` に固定 + `remember_last_entry` 無効化し、再起動後の Limine メニューで **ISO Boot → Clonezilla-AutoBackup** を手動選択
-- 復元時: `default_entry` を AutoRestore に一時設定 (ocs_prerun 先頭で元に戻すため繰り返し実行なし)
+- バックアップ/復元時: 次回1回のみ `default_entry` を AutoBackup/AutoRestore に設定し、Live 内 `ocs_prerun` 先頭で通常 (バックアップ時は `linux-cachyos` 等、`remember_last_entry` も) へ戻す
 - `toram` で起動するため RAM に余裕が必要です（目安: 空き 2GB 以上）
 - **Secure Boot非対応**のため、無効化しておく必要があります
 

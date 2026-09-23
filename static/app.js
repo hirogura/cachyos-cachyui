@@ -1953,7 +1953,7 @@ async function loadBackupStatus() {
     if (!d.limine_present) {
       html += `<div class="text-warn" style="margin-top:0.3rem;">⚠ /boot/limine.conf が見つかりません。Limine 環境で実行してください。</div>`;
     } else {
-      html += `<div class="muted" style="margin-top:0.3rem;">注: バックアップ時は既定を linux-cachyos に固定し remember_last_entry を無効化します。復元時は AutoRestore を一時的に既定にします。</div>`;
+      html += `<div class="muted" style="margin-top:0.3rem;">注: バックアップ/復元時は次回1回のみ AutoBackup/AutoRestore を既定起動にし、処理中に default_entry を通常 (linux-cachyos 等) へ戻します。</div>`;
     }
     if (!d.iso_found || !d.iso_mounted) {
       html += `<div class="text-warn" style="margin-top:0.3rem;">${!d.iso_mounted
@@ -2047,7 +2047,7 @@ async function runBackup() {
     return;
   }
   await prepareClonezillaRun('backup', device, '',
-    `バックアップを開始しますか？\n\n保存先パーティション: ${device}\n\n・Limineエントリを作成します\n・再起動後、Clonezilla Live がバックアップを行い、完了後に自動で再起動します`);
+    `バックアップを開始しますか？\n\n保存先パーティション: ${device}\n\n・Limineエントリを作成し、次回起動のみ AutoBackup を自動選択します\n・バックアップ完了後は通常の linux-cachyos から自動で起動します\n・処理完了後に自動で再起動します`);
 }
 
 async function loadRestoreImages() {
