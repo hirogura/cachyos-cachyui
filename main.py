@@ -1998,7 +1998,7 @@ async def system_selfupdate():
 
     The updater runs independently of this server, so it always finishes
     even though the files being replaced belong to the running service.
-    Applying the new version (service restart) is done manually by the user.
+    完了後はフロントエンドが自動で再起動→リフレッシュを実行する。
     """
     try:
         with open(CACHYUI_UPDATE_PID, encoding="utf-8") as f:
