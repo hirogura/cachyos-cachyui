@@ -1902,7 +1902,12 @@ async def backup_run(req: Request):
                 revert_remember=True, orig_remember=orig_remember, had_remember=had_remember,
             )
         else:
-            revert = _build_default_revert_cmd(orig_default, had_default, bootdev, rel)
+            # 復元時も remember_last_entry が default_entry より優先されるため、
+            # 一時的に no 化した分を ocs_prerun で元に戻す
+            revert = _build_default_revert_cmd(
+                orig_default, had_default, bootdev, rel,
+                revert_remember=True, orig_remember=orig_remember, had_remember=had_remember,
+            )
     # 解決できない場合は revert なし (復元は /boot 上書きで自然に戻る / バックアップは手動選択にフォールバック)
 
     cmdline = _build_ocs_cmdline(base_cmd, device, ocs_run, revert)
@@ -1923,10 +1928,13 @@ async def backup_run(req: Request):
 
     lim_lines = await _limine_load_lines() or []
     auto_idx = _limine_find_index_by_stub(lim_lines, stub)
+    # Limine のサブエントリは数値ではなくパス指定が必須
+    # (数値でディレクトリを指すと自動起動が無効化され CachyOS が選択されたままになる)。
+    auto_path = _limine_auto_entry_path(stub)
     if mode == "backup":
         if auto_idx is not None and revert:
             # 次回1回のみ AutoBackup を既定にし、Live 内 ocs_prerun で通常設定へ戻す
-            await _limine_set_default(str(auto_idx))
+            await _limine_set_default(auto_path)
             await _limine_set_remember("no")
             message = (
                 f"{summary}\n準備完了。再起動すると「ISO Boot > {stub}」が自動起動され、Clonezilla Live が "
@@ -1946,7 +1954,9 @@ async def backup_run(req: Request):
             )
     else:
         if auto_idx is not None:
-            await _limine_set_default(str(auto_idx))
+            await _limine_set_default(auto_path)
+            # remember_last_entry が yes だと default_entry より優先されるため無効化する
+            await _limine_set_remember("no")
         message = (
             f"{summary}\n準備完了。再起動すると「ISO Boot > {stub}」が自動選択され、Clonezilla Live が "
             f"自動復元します (ocs_prerun 先頭で default_entry を元に戻します)\n対象: {target_str}"
@@ -2323,6 +2333,22 @@ def _limine_find_index_by_title(lines: list[str], title: str) -> int | None:
         if name == title:
             return idx
     return None
+
+
+def _limine_escape_path_component(name: str) -> str:
+    """default_entry パス用にエントリ名をエスケープする (Limine CONFIG.md 準拠)。"""
+    return name.replace("\\", "\\\\").replace("/", "\\/").replace("#", "\\#")
+
+
+def _limine_auto_entry_path(stub: str) -> str:
+    """ISO Boot ディレクトリ配下のサブエントリの default_entry 用パスを返す。
+
+    Limine の default_entry は数値インデックスだとディレクトリを指すと
+    自動起動が無効化されるため、サブエントリは「ISO Boot/Clonezilla-AutoBackup」
+    のようなパス指定が必須 (CONFIG.md の entry path 形式)。
+    """
+    dir_name = MENU_SECTION.lstrip("/").lstrip("+")
+    return f"{_limine_escape_path_component(dir_name)}/{_limine_escape_path_component(stub)}"
 
 
 def _limine_archiso_to_loop(iso: str, cmdline: str) -> str:
