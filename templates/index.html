@@ -17,7 +17,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       </div>
       <div class="logo-info">
-        <span class="logo-text">cachy-UI<span class="logo-version">v.2.5.5</span></span>
+        <span class="logo-text">cachy-UI<span class="logo-version">v.2.5.6</span></span>
         <span class="logo-hostname" id="sidebar-hostname">...</span>
       </div>
     </div>
@@ -674,6 +674,25 @@
           <button class="btn btn-primary" id="btn-apps-shortcut" onclick="createSelectedShortcuts()">ショートカット作成</button>
         </div>
       </div>
+
+      <h2>設定</h2>
+      <div class="stat-card" style="margin-bottom:1rem;">
+        <div style="display:flex;gap:0.6rem;align-items:flex-start;padding:0.45rem 0;">
+          <div style="flex:1;">
+            <div style="display:flex;align-items:center;gap:0.5rem;">
+              <span style="font-weight:600;">ノートPCで画面を閉じてもスリープしない</span>
+              <span id="lid-switch-badge"><span class="badge badge-other">確認中...</span></span>
+            </div>
+            <div class="muted" style="font-size:0.78rem;">デスクトップ環境なしでサーバー運用するノートPC向け (systemd-logind の蓋閉じ動作を ignore に設定)。</div>
+            <div class="muted" id="lid-switch-detail" style="font-size:0.78rem;"></div>
+          </div>
+        </div>
+        <div id="lid-switch-status" class="status-msg"></div>
+        <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:0.5rem;">
+          <button class="btn btn-secondary" id="btn-lid-switch-disable" onclick="setLidSwitch(false)">無効</button>
+          <button class="btn btn-primary" id="btn-lid-switch-enable" onclick="setLidSwitch(true)">有効</button>
+        </div>
+      </div>
     </section>
 
     <!-- cachy-UI Fleet (Bulk Management) -->
@@ -724,6 +743,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=38"></script>
+  <script src="/static/app.js?v=39"></script>
 </body>
 </html>

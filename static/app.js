@@ -2565,6 +2565,85 @@ const APPS_INSTALL_DEFS = [
 async function loadAppsPage() {
   await loadAppsStatus();
   await loadAppsShortcuts();
+  await loadLidSwitch();
+}
+
+// --- 設定: ノートPCで画面を閉じてもスリープしない (systemd-logind) ---
+async function loadLidSwitch() {
+  const badgeEl = document.getElementById('lid-switch-badge');
+  const detailEl = document.getElementById('lid-switch-detail');
+  const statusEl = document.getElementById('lid-switch-status');
+  if (!badgeEl) return;
+  badgeEl.innerHTML = '<span class="badge badge-other">確認中...</span>';
+  if (detailEl) detailEl.textContent = '';
+  if (statusEl) { statusEl.className = 'status-msg'; statusEl.textContent = ''; }
+  try {
+    const resp = await fetch('/api/system/lid-switch');
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    renderLidSwitch(data);
+  } catch (e) {
+    badgeEl.innerHTML = '<span class="badge badge-other">不明</span>';
+    if (statusEl) {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = `状態取得エラー: ${e.message}`;
+    }
+  }
+}
+
+function renderLidSwitch(data) {
+  const badgeEl = document.getElementById('lid-switch-badge');
+  const detailEl = document.getElementById('lid-switch-detail');
+  if (!badgeEl) return;
+  badgeEl.innerHTML = data.enabled
+    ? '<span class="badge badge-active">有効</span>'
+    : '<span class="badge badge-other">無効</span>';
+  if (detailEl) detailEl.textContent = data.detail || '';
+}
+
+async function setLidSwitch(enable) {
+  const statusEl = document.getElementById('lid-switch-status');
+  const btnEnable = document.getElementById('btn-lid-switch-enable');
+  const btnDisable = document.getElementById('btn-lid-switch-disable');
+  if (!confirm(enable
+    ? '「ノートPCで画面を閉じてもスリープしない」を有効にしますか？\n蓋閉じ時の動作を ignore に設定し systemd-logind を再起動します。'
+    : '「ノートPCで画面を閉じてもスリープしない」を無効にしますか？\n蓋を閉じると通常通りスリープするよう戻します。')) return;
+  if (btnEnable) btnEnable.disabled = true;
+  if (btnDisable) btnDisable.disabled = true;
+  if (statusEl) {
+    statusEl.className = 'status-msg show info';
+    statusEl.innerHTML = '<span class="spinner"></span> 設定を適用中...';
+  }
+  try {
+    const resp = await fetch('/api/system/lid-switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enable }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    if (data.success) {
+      if (statusEl) {
+        statusEl.className = 'status-msg show success';
+        statusEl.textContent = data.message || '設定を適用しました。';
+      }
+      renderLidSwitch(data);
+      showStatus(data.message || '設定を適用しました', 'success');
+    } else {
+      if (statusEl) {
+        statusEl.className = 'status-msg show error';
+        statusEl.textContent = data.message || '設定に失敗しました。';
+      }
+    }
+  } catch (e) {
+    if (statusEl) {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = `エラー: ${e.message}`;
+    }
+  } finally {
+    if (btnEnable) btnEnable.disabled = false;
+    if (btnDisable) btnDisable.disabled = false;
+  }
 }
 
 async function loadAppsStatus() {

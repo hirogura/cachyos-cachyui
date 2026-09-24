@@ -2121,6 +2121,102 @@ async def shutdown_system():
 
 
 # ============================================================
+# 7.5 ノートPC 蓋閉じでもスリープしない設定 (systemd-logind)
+# ============================================================
+# デスクトップ環境なしでサーバー運用するノートPC向け。
+# /etc/systemd/logind.conf.d/ に drop-in を置き、蓋閉じ時の動作を ignore にする。
+LID_SWITCH_DROPIN = "/etc/systemd/logind.conf.d/99-cachyui-no-suspend-on-lid.conf"
+LID_SWITCH_CONTENT = (
+    "[Login]\n"
+    "HandleLidSwitch=ignore\n"
+    "HandleLidSwitchExternalPower=ignore\n"
+    "HandleLidSwitchDocked=ignore\n"
+)
+_LID_KEYS = ("HandleLidSwitch", "HandleLidSwitchExternalPower", "HandleLidSwitchDocked")
+
+
+def _parse_lid_value(text: str, key: str) -> str | None:
+    """設定ファイル本文から指定キーの有効値(最後の非コメント行)を返す。"""
+    val: str | None = None
+    for line in (text or "").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or s.startswith(";") or s.startswith("["):
+            continue
+        m = re.match(rf"^{re.escape(key)}\s*=\s*(\S+)", s)
+        if m:
+            # 行末コメント除去
+            val = m.group(1).split("#")[0].split(";")[0].strip() or None
+    return val
+
+
+def _lid_switch_state() -> dict:
+    """現在の蓋閉じ設定を返す。enabled は本機能の drop-in が有効な場合 True。"""
+    values: dict = {}
+    dropin_text = ""
+    try:
+        with open(LID_SWITCH_DROPIN, encoding="utf-8", errors="replace") as f:
+            dropin_text = f.read()
+    except OSError:
+        pass
+    main_text = ""
+    try:
+        with open("/etc/systemd/logind.conf", encoding="utf-8", errors="replace") as f:
+            main_text = f.read()
+    except OSError:
+        pass
+    enabled = all(_parse_lid_value(dropin_text, k) == "ignore" for k in _LID_KEYS)
+    for k in _LID_KEYS:
+        v = _parse_lid_value(dropin_text, k) or _parse_lid_value(main_text, k)
+        values[k] = v or "未設定 (既定: suspend)"
+    if enabled:
+        detail = "有効 (蓋を閉じてもスリープしません)"
+    elif any(_parse_lid_value(dropin_text, k) is not None for k in _LID_KEYS):
+        detail = "一部のみ設定されています (再有効化推奨)"
+    else:
+        detail = "無効 (蓋を閉じるとスリープします)"
+    return {"enabled": enabled, "values": values, "detail": detail}
+
+
+@app.get("/api/system/lid-switch")
+async def lid_switch_status():
+    """蓋閉じスリープ抑止の状態を返す。"""
+    return _lid_switch_state()
+
+
+@app.post("/api/system/lid-switch")
+async def lid_switch_set(req: Request):
+    """蓋閉じスリープ抑止の有効/無効を切り替える。"""
+    data = await _get_json(req)
+    enable = data.get("enable", True)
+    # 文字列 "false"/"0" 等も許容する
+    if isinstance(enable, str):
+        enable = enable.strip().lower() not in ("false", "0", "no", "off", "disable")
+    enable = bool(enable)
+    if enable:
+        cmd = (
+            f"mkdir -p {shlex.quote(os.path.dirname(LID_SWITCH_DROPIN))}"
+            f" && printf %s {shlex.quote(LID_SWITCH_CONTENT)} > {shlex.quote(LID_SWITCH_DROPIN)}"
+            f" && {_sudo('systemctl restart systemd-logind')}"
+        )
+        r = await run_cmd(cmd, timeout=60)
+        if r["returncode"] != 0:
+            return {"success": False,
+                    "message": f"設定に失敗しました: {(r['stderr'] or r['stdout']).strip()[:500]}"}
+        return {"success": True,
+                "message": "有効にしました。蓋を閉じてもスリープしません (systemd-logind を再起動済み)。",
+                **_lid_switch_state()}
+    else:
+        cmd = f"rm -f {shlex.quote(LID_SWITCH_DROPIN)} && {_sudo('systemctl restart systemd-logind')}"
+        r = await run_cmd(cmd, timeout=60)
+        if r["returncode"] != 0:
+            return {"success": False,
+                    "message": f"無効化に失敗しました: {(r['stderr'] or r['stdout']).strip()[:500]}"}
+        return {"success": True,
+                "message": "無効にしました。蓋を閉じると通常通りスリープします。",
+                **_lid_switch_state()}
+
+
+# ============================================================
 # ============================================================
 # 8. Limine 管理 (cachy-isoboot 方式 / create-isopart 連携)
 # ============================================================
