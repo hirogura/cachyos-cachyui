@@ -2026,7 +2026,7 @@ async function loadBackupStatus() {
     if (!d.limine_present) {
       html += `<div class="text-warn" style="margin-top:0.3rem;">⚠ /boot/limine.conf が見つかりません。Limine 環境で実行してください。</div>`;
     } else {
-      html += `<div class="muted" style="margin-top:0.3rem;">注: バックアップ/復元時は次回1回のみ AutoBackup/AutoRestore を既定起動にし、処理中に default_entry を通常 (linux-cachyos 等) へ戻します。</div>`;
+      html += `<div class="muted" style="margin-top:0.3rem;">注: バックアップ/復元時は次回1回のみ AutoBackup/AutoRestore を既定起動にし、処理前後 (ocs_prerun/ocs_postrun) で default_entry を通常 (バックアップ後は linux-cachyos の番号) へ戻し、remember_last_entry は no 固定です。メイン区画開始前の superblock 読み込みには時間がかかることがありますが仕様です。</div>`;
     }
     if (!d.iso_found || !d.iso_mounted) {
       html += `<div class="text-warn" style="margin-top:0.3rem;">${!d.iso_mounted

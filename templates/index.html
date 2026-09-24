@@ -17,7 +17,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       </div>
       <div class="logo-info">
-        <span class="logo-text">cachy-UI<span class="logo-version">v.2.5.4</span></span>
+        <span class="logo-text">cachy-UI<span class="logo-version">v.2.5.5</span></span>
         <span class="logo-hostname" id="sidebar-hostname">...</span>
       </div>
     </div>
@@ -482,7 +482,8 @@
           <li><strong>パーティションのみ対応</strong>です（LVM は非対応）。</li>
           <li><strong>保存用パーティション</strong>を用意し、<strong>/iso</strong> にマウントしておく必要があります。</li>
           <li><strong>/iso</strong> 内の Clonezilla Live ISO からカーネルを取り出して Limine 起動するため、インストール作業は不要です。</li>
-          <li>バックアップ・復元ともに再起動後は次回1回のみ「ISO Boot &gt; Clonezilla-AutoBackup / AutoRestore」が自動選択されます。処理完了後は default_entry を通常 (linux-cachyos 等) に戻し、自動で再起動して通常ブートに戻ります（toram 使用のため RAM 2GB 以上の空き推奨）。</li>
+          <li>バックアップ・復元ともに再起動後は次回1回のみ「ISO Boot &gt; Clonezilla-AutoBackup / AutoRestore」が自動選択されます。処理完了後は default_entry を通常 (バックアップ後は linux-cachyos の番号、例: 2) に戻し、remember_last_entry は no のまま固定して自動で再起動します（toram 使用のため RAM 2GB 以上の空き推奨）。</li>
+          <li>メインのパーティション開始直前の superblock 読み込みには時間がかかることがあります (partclone が使用中ブロック特定のためファイルシステム全体を走査する仕様のため。異常ではありません)。</li>
           <li>Secure Boot が有効だと起動できないため、無効化しておく必要があります。</li>
         </ul>
         <div id="backup-env-status" class="backup-env-status"><span class="spinner"></span> 状態を確認中...</div>

@@ -1746,7 +1746,14 @@ async def backup_images(req: Request):
 
 
 def _build_ocs_cmdline(base_cmdline: str, repo: str, ocs_run: str, revert_cmd: str = "") -> str:
-    """Clonezilla 無人実行用 cmdline を組み立てる (toram 必須)。"""
+    """Clonezilla 無人実行用 cmdline を組み立てる (toram 必須)。
+
+    revert_cmd は ocs_prerun と ocs_postrun の両方で実行する。
+    prerun (開始直後) で default_entry を通常起動へ戻しておくことで、
+    万が一 postrun が実行されなくても次回起動が AutoBackup に留まらない。
+    postrun (終了直後・reboot直前) で再度戻すことで、prerun 時のマウント失敗
+    (例: /mnt 使用中) に対する二重の安全網にする。
+    """
     # 空の locales=/keyboard-layouts= を除去して明示値を付与
     base = re.sub(r"(^|\s)locales=\S*", r"\1", base_cmdline)
     base = re.sub(r"(^|\s)keyboard-layouts=\S*", r"\1", base)
@@ -1757,12 +1764,18 @@ def _build_ocs_cmdline(base_cmdline: str, repo: str, ocs_run: str, revert_cmd: s
     base = re.sub(r"ocs_[A-Za-z_]+\S*", "", base)
     base = re.sub(r"\s+", " ", base).strip()
     prerun = f"mount {repo} /home/partimag"
+    postrun = ""
     if revert_cmd:
         prerun += f" && {revert_cmd}"
-    return (
+        postrun = revert_cmd
+    cmd = (
         f"{base} toram ocs_lang=en_US.UTF-8 ocs_live_batch=\"yes\" "
-        f"ocs_final_action=reboot ocs_prerun=\"{prerun}\" ocs_live_run=\"{ocs_run}\""
+        f"ocs_final_action=reboot ocs_prerun=\"{prerun}\""
     )
+    if postrun:
+        cmd += f" ocs_postrun=\"{postrun}\""
+    cmd += f" ocs_live_run=\"{ocs_run}\""
+    return cmd
 
 
 async def _resolve_limine_conf_device() -> tuple[str | None, str]:
@@ -1800,7 +1813,7 @@ def _build_default_revert_cmd(
     orig_remember: str | None = None,
     had_remember: bool = False,
 ) -> str:
-    """ocs_prerun 先頭で default_entry (と必要なら remember_last_entry) を元に戻すシェル片を生成する。"""
+    """ocs_prerun / ocs_postrun で default_entry (と必要なら remember_last_entry) を元に戻すシェル片を生成する。"""
     # 本家lib.shと同じく、準備時に解決したデバイスをリテラルで埋め込む。
     # Live実行中に findmnt すると overlay が返りマウントに失敗するため、動的解決はしない。
     _validate_block_device(bootdev)
@@ -1820,15 +1833,40 @@ def _build_default_revert_cmd(
             cmds.append(f"sed -i 's|^[[:space:]]*remember_last_entry:.*|remember_last_entry: {safe_r}|' {target}")
         else:
             cmds.append(f"sed -i '/^[[:space:]]*remember_last_entry:/d' {target}")
-    return f"mount -o rw {shlex.quote(bootdev)} /mnt && " + " && ".join(cmds) + " ; umount /mnt"
+    # /mnt は Live 環境で使用中の場合があるため mkdir してから mount し、
+    # sed 失敗時も umount だけは実行する (|| true で ocs 処理本体を止めない)。
+    return f"mkdir -p /mnt && mount -o rw {shlex.quote(bootdev)} /mnt && " + " && ".join(cmds) + " ; umount /mnt || true"
+
+
+def _limine_normal_default_value(lines: list[str], orig_default: str | None,
+                                 had_default: bool) -> tuple[str | None, bool]:
+    """バックアップ完了後の通常起動先を求める (v2.5.5)。
+
+    要求仕様: バックアップ後は「2 sub linux-cachyos」(linux-cachyos の
+    サブエントリ番号) が選択されるようにする。
+    そのため数値インデックス (例: "2") を最優先で返す。見つからなければ
+    フルパス (例: CachyOS/linux-cachyos)、それも無ければ元の default を
+    パス正規化して使う。
+    """
+    idx = _limine_find_index_by_title(lines, "linux-cachyos")
+    if idx is not None:
+        return str(idx), True
+    normal_path = _limine_find_entry_path_by_title(lines, "linux-cachyos")
+    if normal_path is not None:
+        return normal_path, True
+    resolved = _limine_resolve_default_to_path(lines, orig_default)
+    if resolved:
+        return resolved, True
+    return orig_default, had_default
 
 
 @app.post("/api/backup/run")
 async def backup_run(req: Request):
     """Limine 方式で無人 Clonezilla 実行エントリを準備する。
 
-    次回1回のみ AutoBackup/AutoRestore を既定起動し、ocs_prerun 先頭で
-    default_entry (バックアップ時は remember_last_entry も) を元に戻す。
+    次回1回のみ AutoBackup/AutoRestore を既定起動し、ocs_prerun と
+    ocs_postrun の両方で default_entry を通常起動 (バックアップ時は
+    linux-cachyos の番号) に戻し、remember_last_entry は no に固定する。
     """
     data = await _get_json(req)
     mode = data.get("mode", "").strip()
@@ -1890,31 +1928,28 @@ async def backup_run(req: Request):
     bootdev, rel = await _resolve_limine_conf_device()
     if bootdev:
         if mode == "backup":
-            # 完了後の通常起動は linux-cachyos のフルパス (例: CachyOS/linux-cachyos) に戻す。
+            # 完了後の通常起動は linux-cachyos のサブエントリ番号 (例: "2") に戻す (v2.5.5)。
             # 素のタイトルだけだと何にもマッチせず自動起動が無効化され、
             # ディレクトリ CachyOS で選択停止するため (v2.5.2 修正)。
-            # 追加でエントリ番号がズレるため、番号ではなくパス指定を優先する。
-            # 無ければ元の default をパス正規化して使う。
-            normal_path = _limine_find_entry_path_by_title(lines, "linux-cachyos")
-            if normal_path is not None:
-                rdef, rhad = normal_path, True
-            else:
-                resolved = _limine_resolve_default_to_path(lines, orig_default)
-                rdef, rhad = (resolved, True) if resolved else (orig_default, had_default)
-            # remember を no に固定するため、元の値へ戻す片も同梱する
+            # パス指定も有効だが、要求仕様どおり番号を最優先にする。
+            # 無ければフルパス、さらに無ければ元の default をパス正規化して使う。
+            rdef, rhad = _limine_normal_default_value(lines, orig_default, had_default)
+            # remember_last_entry=yes は default_entry より優先され、
+            # 直前に起動した AutoBackup を再度自動選択して無限ループになるため、
+            # revert では元の yes に戻さず no に固定する (Limine CONFIG.md 仕様 + #459 対策)。
             revert = _build_default_revert_cmd(
                 rdef, rhad, bootdev, rel,
-                revert_remember=True, orig_remember=orig_remember, had_remember=had_remember,
+                revert_remember=True, orig_remember="no", had_remember=True,
             )
         else:
             # 復元時も remember_last_entry が default_entry より優先されるため、
-            # 一時的に no 化した分を ocs_prerun で元に戻す。
+            # revert でも no に固定する (元の yes には戻さない)。
             # 素タイトルの場合はフルパスに正規化する (v2.5.2)。
             resolved = _limine_resolve_default_to_path(lines, orig_default)
             rdef, rhad = (resolved, True) if resolved else (orig_default, had_default)
             revert = _build_default_revert_cmd(
                 rdef, rhad, bootdev, rel,
-                revert_remember=True, orig_remember=orig_remember, had_remember=had_remember,
+                revert_remember=True, orig_remember="no", had_remember=True,
             )
     # 解決できない場合は revert なし (復元は /boot 上書きで自然に戻る / バックアップは手動選択にフォールバック)
 
@@ -1941,20 +1976,25 @@ async def backup_run(req: Request):
     auto_path = _limine_auto_entry_path(stub)
     if mode == "backup":
         if auto_idx is not None and revert:
-            # 次回1回のみ AutoBackup を既定にし、Live 内 ocs_prerun で通常設定へ戻す
+            # 次回1回のみ AutoBackup を既定にし、Live 内 ocs_prerun/ocs_postrun で通常設定へ戻す
             await _limine_set_default(auto_path)
             await _limine_set_remember("no")
             message = (
                 f"{summary}\n準備完了。再起動すると「ISO Boot > {stub}」が自動起動され、Clonezilla Live が "
-                f"自動バックアップします (完了時に default_entry を linux-cachyos 等へ戻してから再起動します)\n"
-                f"対象: {target_str}\n(remember_last_entry は一時的に no に設定)"
+                f"自動バックアップします (ocs_prerun/ocs_postrun で default_entry を linux-cachyos の番号へ戻し、"
+                f"remember_last_entry は no のまま固定してから再起動します)\n"
+                f"対象: {target_str}\n(remember_last_entry は no に設定。元の yes には戻しません)"
             )
         else:
             # limine.conf のデバイスを特定できない場合は従来どおり手動選択にフォールバック
-            # (通常起動先だけはフルパスで戻しておく)
-            fallback_path = _limine_find_entry_path_by_title(lim_lines, "linux-cachyos")
-            if fallback_path is not None:
-                await _limine_set_default(fallback_path)
+            # (通常起動先だけは番号で戻しておく)
+            fallback_idx = _limine_find_index_by_title(lim_lines, "linux-cachyos")
+            if fallback_idx is not None:
+                await _limine_set_default(str(fallback_idx))
+            else:
+                fallback_path = _limine_find_entry_path_by_title(lim_lines, "linux-cachyos")
+                if fallback_path is not None:
+                    await _limine_set_default(fallback_path)
             await _limine_set_remember("no")
             message = (
                 f"{summary}\n準備完了 (自動1回起動は limine.conf のデバイス特定に失敗したため手動選択)。"
@@ -1968,7 +2008,7 @@ async def backup_run(req: Request):
             await _limine_set_remember("no")
         message = (
             f"{summary}\n準備完了。再起動すると「ISO Boot > {stub}」が自動選択され、Clonezilla Live が "
-            f"自動復元します (ocs_prerun 先頭で default_entry を元に戻します)\n対象: {target_str}"
+            f"自動復元します (ocs_prerun/ocs_postrun で default_entry を元に戻し、remember_last_entry は no 固定)\n対象: {target_str}"
         )
     return {"success": True, "message": message, "stub": stub}
 
