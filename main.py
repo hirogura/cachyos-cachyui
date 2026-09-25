@@ -2306,6 +2306,46 @@ async def lid_switch_set(req: Request):
 
 
 # ============================================================
+# 7.6 pacman ロックファイル削除 (CachyOS Hello の Remove db lock と同じ動作)
+# ============================================================
+# CachyOS Hello (CachyOS-Welcome src/actions.rs remove_dblock) と同じく
+# /var/lib/pacman/db.lck が存在すれば削除し、無ければその旨を返す。
+PACMAN_DB_LOCK = "/var/lib/pacman/db.lck"
+
+
+def _pacman_dblock_exists() -> bool:
+    try:
+        return os.path.exists(PACMAN_DB_LOCK)
+    except Exception:
+        return False
+
+
+@app.get("/api/system/pacman-dblock")
+async def pacman_dblock_status():
+    """pacman ロックファイルの有無を返す。"""
+    exists = await asyncio.to_thread(_pacman_dblock_exists)
+    return {"exists": exists, "path": PACMAN_DB_LOCK}
+
+
+@app.post("/api/system/pacman-dblock")
+async def pacman_dblock_remove():
+    """pacman ロックファイルを削除する (CachyOS Hello の Remove db lock と同じ動作)。"""
+    exists = await asyncio.to_thread(_pacman_dblock_exists)
+    if not exists:
+        return {"success": True, "message": "ロックファイルはありませんでした (削除の必要はありません)。",
+                "exists": False, "path": PACMAN_DB_LOCK}
+    r = await run_cmd(_sudo(f"rm -f {shlex.quote(PACMAN_DB_LOCK)}"), timeout=15)
+    still = await asyncio.to_thread(_pacman_dblock_exists)
+    if r["returncode"] != 0 or still:
+        err = (r["stderr"] or r["stdout"]).strip()[:500]
+        return {"success": False,
+                "message": f"削除に失敗しました: {err or 'ロックファイルが残っています'}",
+                "exists": True, "path": PACMAN_DB_LOCK}
+    return {"success": True, "message": "ロックファイルを削除しました。",
+            "exists": False, "path": PACMAN_DB_LOCK}
+
+
+# ============================================================
 # ============================================================
 # 8. Limine 管理 (cachy-isoboot 方式 / create-isopart 連携)
 # ============================================================

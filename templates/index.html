@@ -17,7 +17,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       </div>
       <div class="logo-info">
-        <span class="logo-text">cachy-UI<span class="logo-version">v.2.6.0</span></span>
+        <span class="logo-text">cachy-UI<span class="logo-version">v.2.7.0</span></span>
         <span class="logo-hostname" id="sidebar-hostname">...</span>
       </div>
     </div>
@@ -84,7 +84,7 @@
       </li>
       <li data-tab="apps">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M17.5 14v6M14.5 17h6"/></svg>
-        <span>アプリ</span>
+        <span>アプリ/設定</span>
       </li>
       <li data-tab="fleet">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
@@ -652,7 +652,7 @@
 
     <!-- Apps -->
     <section id="tab-apps" class="tab-content">
-      <h1>アプリ</h1>
+      <h1>アプリ/設定</h1>
       <div id="apps-status-msg" class="status-msg"></div>
 
       <h2>アプリのインストール</h2>
@@ -712,6 +712,20 @@
           <button class="btn btn-secondary" id="btn-lid-switch-disable" onclick="setLidSwitch(false)">無効</button>
           <button class="btn btn-primary" id="btn-lid-switch-enable" onclick="setLidSwitch(true)">有効</button>
         </div>
+        <div style="display:flex;gap:0.6rem;align-items:flex-start;padding:0.45rem 0;border-top:1px solid var(--border);margin-top:0.45rem;">
+          <div style="flex:1;">
+            <div style="display:flex;align-items:center;gap:0.5rem;">
+              <span style="font-weight:600;">ロックファイルを削除する</span>
+              <span id="dblock-badge"><span class="badge badge-other">確認中...</span></span>
+            </div>
+            <div class="muted" style="font-size:0.78rem;">CachyOS Hello アプリの「Remove db lock」と同じ動作 (pacman のロックファイル /var/lib/pacman/db.lck を削除)。パッケージ操作が動いていないことを確認してから実行してください。</div>
+            <div class="muted" id="dblock-detail" style="font-size:0.78rem;"></div>
+          </div>
+        </div>
+        <div id="dblock-status" class="status-msg"></div>
+        <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:0.5rem;">
+          <button class="btn btn-primary" id="btn-dblock-run" onclick="removeDbLock()">実行する</button>
+        </div>
       </div>
     </section>
 
@@ -763,6 +777,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=40"></script>
+  <script src="/static/app.js?v=41"></script>
 </body>
 </html>

@@ -2567,6 +2567,7 @@ async function loadAppsPage() {
   await loadAppsShortcuts();
   await loadVentoyUI();
   await loadLidSwitch();
+  await loadDblock();
 }
 
 // --- Webアプリ: Ventoy-UI ---
@@ -2744,6 +2745,68 @@ async function setLidSwitch(enable) {
   } finally {
     if (btnEnable) btnEnable.disabled = false;
     if (btnDisable) btnDisable.disabled = false;
+  }
+}
+
+// --- 設定: ロックファイルを削除する (CachyOS Hello の Remove db lock と同じ動作) ---
+async function loadDblock() {
+  const badgeEl = document.getElementById('dblock-badge');
+  const detailEl = document.getElementById('dblock-detail');
+  const statusEl = document.getElementById('dblock-status');
+  if (!badgeEl) return;
+  badgeEl.innerHTML = '<span class="badge badge-other">確認中...</span>';
+  if (detailEl) detailEl.textContent = '';
+  if (statusEl) { statusEl.className = 'status-msg'; statusEl.textContent = ''; }
+  try {
+    const resp = await fetch('/api/system/pacman-dblock');
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    renderDblock(data);
+  } catch (e) {
+    badgeEl.innerHTML = '<span class="badge badge-other">不明</span>';
+    if (statusEl) {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = `状態取得エラー: ${e.message}`;
+    }
+  }
+}
+
+function renderDblock(data) {
+  const badgeEl = document.getElementById('dblock-badge');
+  const detailEl = document.getElementById('dblock-detail');
+  if (!badgeEl) return;
+  badgeEl.innerHTML = data.exists
+    ? '<span class="badge badge-warn">ロックあり</span>'
+    : '<span class="badge badge-active">ロックなし</span>';
+  if (detailEl) detailEl.textContent = data.exists ? `${data.path || '/var/lib/pacman/db.lck'} が存在します` : 'ロックファイルはありません';
+}
+
+async function removeDbLock() {
+  const statusEl = document.getElementById('dblock-status');
+  const btn = document.getElementById('btn-dblock-run');
+  if (!confirm('pacman のロックファイルを削除しますか？\n\nCachyOS Hello の「Remove db lock」と同じく /var/lib/pacman/db.lck を削除します。\nパッケージ操作 (pacman・paru・yay・アップデート) が動いていないことを確認してください。')) return;
+  if (btn) btn.disabled = true;
+  if (statusEl) {
+    statusEl.className = 'status-msg show info';
+    statusEl.innerHTML = '<span class="spinner"></span> 削除中...';
+  }
+  try {
+    const resp = await fetch('/api/system/pacman-dblock', { method: 'POST' });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    if (statusEl) {
+      statusEl.className = `status-msg show ${data.success ? 'success' : 'error'}`;
+      statusEl.textContent = data.message || '';
+    }
+    showStatus(data.message || '', data.success ? 'success' : 'error');
+    renderDblock(data);
+  } catch (e) {
+    if (statusEl) {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = `エラー: ${e.message}`;
+    }
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
