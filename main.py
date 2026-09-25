@@ -1540,6 +1540,95 @@ async def diskmanager_status():
 
 
 # ============================================================
+# 7.x Webアプリ: Ventoy-UI (https://github.com/hirogura/ventoy-ui.git)
+# ============================================================
+# デスクトップアプリ (pacman等) とは異なり、/opt/ventoy-ui に clone して
+# systemd サービス (ventoy-ui) として常駐させ、Tailscale Serve 経由で使う Webアプリ。
+VENTOY_UI_DIR = "/opt/ventoy-ui"
+VENTOY_UI_REPO = "https://github.com/hirogura/ventoy-ui.git"
+VENTOY_UI_PORT = 3363
+VENTOY_UI_SERVICE = "ventoy-ui"
+
+
+async def _tailscale_https_url(port: int) -> str | None:
+    """Tailscale の DNS名から https URL を組み立てる (取得できなければ None)。"""
+    ts = await run_cmd("tailscale status --json 2>/dev/null", timeout=5)
+    try:
+        data = json.loads(ts["stdout"])
+        dns = data.get("Self", {}).get("DNSName", "")
+        if dns:
+            hostname = dns.rstrip(".")
+            return f"https://{hostname}:{port}/"
+    except (json.JSONDecodeError, KeyError, AttributeError):
+        pass
+    return None
+
+
+@app.get("/api/ventoyui/status")
+async def ventoyui_status():
+    """Ventoy-UI の導入状態と起動用 URL を返す。"""
+    svc = await run_cmd(f"systemctl is-enabled {VENTOY_UI_SERVICE} 2>/dev/null", timeout=5)
+    dir_check = await run_cmd(f"test -d {shlex.quote(VENTOY_UI_DIR)}", timeout=5)
+    installed = svc["returncode"] == 0 or dir_check["returncode"] == 0
+
+    active = ""
+    if installed:
+        act = await run_cmd(f"systemctl is-active {VENTOY_UI_SERVICE} 2>/dev/null", timeout=5)
+        active = act["stdout"].strip()
+
+    url = await _tailscale_https_url(VENTOY_UI_PORT) if installed else None
+    return {"installed": installed, "active": active, "url": url, "port": VENTOY_UI_PORT}
+
+
+@app.post("/api/ventoyui/install")
+async def ventoyui_install():
+    """Ventoy-UI をインストール/更新する (git clone/pull + systemd登録)。"""
+    logs: list[str] = []
+    if os.path.isdir(os.path.join(VENTOY_UI_DIR, ".git")):
+        r = await run_cmd(_sudo(f"git -C {shlex.quote(VENTOY_UI_DIR)} pull --ff-only"), timeout=300)
+        logs.append((r["stdout"] or r["stderr"]).strip())
+        if r["returncode"] != 0:
+            return {"success": False,
+                    "message": f"更新に失敗しました: {(r['stderr'] or r['stdout']).strip()[:500]}"}
+    else:
+        r = await run_cmd(_sudo(f"git clone --depth 1 {VENTOY_UI_REPO} {shlex.quote(VENTOY_UI_DIR)}"), timeout=300)
+        logs.append((r["stdout"] or r["stderr"]).strip())
+        if r["returncode"] != 0:
+            return {"success": False,
+                    "message": f"ダウンロードに失敗しました: {(r['stderr'] or r['stdout']).strip()[:500]}"}
+
+    svc_src = os.path.join(VENTOY_UI_DIR, "ventoy-ui.service")
+    steps = [
+        _sudo(f"cp {shlex.quote(svc_src)} /etc/systemd/system/{VENTOY_UI_SERVICE}.service"),
+        _sudo("systemctl daemon-reload"),
+        _sudo(f"systemctl enable --now {VENTOY_UI_SERVICE}"),
+    ]
+    for cmd in steps:
+        r = await run_cmd(cmd, timeout=120)
+        if (r["stdout"] or "").strip():
+            logs.append(r["stdout"].strip()[-1000:])
+        if r["returncode"] != 0:
+            return {"success": False,
+                    "message": f"サービス登録に失敗しました: {(r['stderr'] or r['stdout']).strip()[:500]}"}
+
+    # Tailscale Serve で https 公開する (既存の Serve 設定は残したまま追加。失敗しても導入自体は成功扱い)
+    ts = await run_cmd(
+        f"tailscale serve --bg --https={VENTOY_UI_PORT} http://127.0.0.1:{VENTOY_UI_PORT} 2>&1",
+        timeout=30,
+    )
+    tail = (ts["stdout"] or ts["stderr"] or "").strip()[-500:]
+    if tail:
+        logs.append(tail)
+
+    url = await _tailscale_https_url(VENTOY_UI_PORT)
+    msg = "Ventoy-UI をインストールしました。"
+    if url:
+        msg += f" 「起動」ボタンで開けます ({url})"
+    detail = "\n".join(l for l in logs if l).strip()[-2000:]
+    return {"success": True, "message": msg, "url": url, "output": detail}
+
+
+# ============================================================
 # ============================================================
 # 7.5 バックアップ / 復元 (Clonezilla Live / Limine 方式)
 # ============================================================

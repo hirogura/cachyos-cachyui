@@ -2565,7 +2565,108 @@ const APPS_INSTALL_DEFS = [
 async function loadAppsPage() {
   await loadAppsStatus();
   await loadAppsShortcuts();
+  await loadVentoyUI();
   await loadLidSwitch();
+}
+
+// --- Webアプリ: Ventoy-UI ---
+async function loadVentoyUI() {
+  const badgeEl = document.getElementById('ventoy-ui-badge');
+  const detailEl = document.getElementById('ventoy-ui-detail');
+  const statusEl = document.getElementById('ventoy-ui-status');
+  if (!badgeEl) return;
+  badgeEl.innerHTML = '<span class="badge badge-other">確認中...</span>';
+  if (detailEl) detailEl.textContent = '';
+  if (statusEl) { statusEl.className = 'status-msg'; statusEl.textContent = ''; }
+  try {
+    const resp = await fetch('/api/ventoyui/status');
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    renderVentoyUI(data);
+  } catch (e) {
+    badgeEl.innerHTML = '<span class="badge badge-other">不明</span>';
+    if (statusEl) {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = `状態取得エラー: ${e.message}`;
+    }
+  }
+}
+
+function renderVentoyUI(data) {
+  const badgeEl = document.getElementById('ventoy-ui-badge');
+  const detailEl = document.getElementById('ventoy-ui-detail');
+  if (!badgeEl) return;
+  badgeEl.innerHTML = data.installed
+    ? '<span class="badge badge-active">導入済み</span>'
+    : '<span class="badge badge-other">未導入</span>';
+  if (detailEl) {
+    const parts = [];
+    if (data.active) parts.push(`サービス: ${data.active}`);
+    if (data.url) parts.push(data.url);
+    else if (data.installed) parts.push('URLを取得できませんでした');
+    detailEl.textContent = parts.join(' / ');
+  }
+}
+
+async function installVentoyUI() {
+  const statusEl = document.getElementById('ventoy-ui-status');
+  const btn = document.getElementById('btn-ventoy-ui-install');
+  if (!confirm('Ventoy-UIをインストールしますか？\n\n/opt/ventoy-ui に取得し、systemd サービス (ventoy-ui) として登録・起動します。\n数分かかる場合があります。')) return;
+  if (btn) btn.disabled = true;
+  if (statusEl) {
+    statusEl.className = 'status-msg show info';
+    statusEl.innerHTML = '<span class="spinner"></span> インストール中...';
+  }
+  try {
+    const resp = await fetch('/api/ventoyui/install', { method: 'POST' });
+    const data = await resp.json().catch(() => ({}));
+    if (btn) btn.disabled = false;
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    if (statusEl) {
+      statusEl.className = `status-msg show ${data.success ? 'success' : 'error'}`;
+      statusEl.textContent = data.message || '';
+    }
+    showStatus(data.message || 'インストールが完了しました', data.success ? 'success' : 'error');
+    loadVentoyUI();
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    if (statusEl) {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = `エラー: ${e.message}`;
+    }
+  }
+}
+
+async function openVentoyUI() {
+  const statusEl = document.getElementById('ventoy-ui-status');
+  try {
+    const resp = await fetch('/api/ventoyui/status');
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    renderVentoyUI(data);
+    if (data.installed && data.url) {
+      window.open(data.url, '_blank');
+      return;
+    }
+    if (data.installed) {
+      if (statusEl) {
+        statusEl.className = 'status-msg show info';
+        statusEl.textContent = 'Ventoy-UIはインストール済みですが、URLを取得できませんでした。';
+      }
+      showStatus('Ventoy-UIはインストール済みです。URLを取得できませんでした。', 'info');
+      return;
+    }
+    if (statusEl) {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = 'Ventoy-UIはまだインストールされていません。「インストール」を押してください。';
+    }
+    showStatus('Ventoy-UIはまだインストールされていません', 'error');
+  } catch (e) {
+    if (statusEl) {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = `エラー: ${e.message}`;
+    }
+  }
 }
 
 // --- 設定: ノートPCで画面を閉じてもスリープしない (systemd-logind) ---
