@@ -4522,12 +4522,11 @@ async def _snapper_assistant_restore(cfg: str, number: int) -> dict | None:
 #   4-desktopicon.sh (デスクトップショートカット)
 MOZC_SETUP_URL = "https://raw.githubusercontent.com/hirogura/scripts/main/cachyos-mozcjp.sh"
 
-APP_INSTALL_KEYS = ("japanese", "chrome", "opera", "thunderbird", "libreoffice", "vlc", "ssh", "rdp")
+APP_INSTALL_KEYS = ("japanese", "chrome", "thunderbird", "libreoffice", "vlc", "ssh", "rdp")
 
 APP_LABELS = {
     "japanese": "日本語入力",
     "chrome": "Google Chrome",
-    "opera": "Opera",
     "thunderbird": "Thunderbird",
     "libreoffice": "LibreOffice",
     "vlc": "VLC",
@@ -4556,11 +4555,6 @@ async def _check_app_status() -> dict:
     w_chrome = await run_cmd("which google-chrome 2>/dev/null", timeout=5)
     status["chrome"] = {"installed": q_chrome["returncode"] == 0 or w_chrome["returncode"] == 0,
                         "detail": q_chrome["stdout"].strip().splitlines()[0] if q_chrome["returncode"] == 0 and q_chrome["stdout"].strip() else ""}
-
-    q_opera = await run_cmd("pacman -Q opera 2>/dev/null", timeout=10)
-    w_opera = await run_cmd("which opera 2>/dev/null", timeout=5)
-    status["opera"] = {"installed": q_opera["returncode"] == 0 or w_opera["returncode"] == 0,
-                       "detail": q_opera["stdout"].strip().splitlines()[0] if q_opera["returncode"] == 0 and q_opera["stdout"].strip() else ""}
 
     q_tb = await run_cmd("pacman -Q thunderbird 2>/dev/null", timeout=10)
     status["thunderbird"] = {"installed": q_tb["returncode"] == 0,
@@ -4617,16 +4611,6 @@ async def _install_single_app(key: str) -> dict:
             return {"success": False, "output": "\n".join(logs)[-3000:]}
         ok = await _step(
             _as_user_cmd(username, "paru -S --noconfirm --needed google-chrome"),
-            timeout=1800,
-            extra_env={"HOME": home},
-        )
-        return {"success": ok, "output": "\n".join(logs)[-3000:]}
-    elif key == "opera":
-        username, home, _shell = get_primary_user()
-        if not await _step(_sudo("pacman -S --noconfirm --needed paru"), timeout=600):
-            return {"success": False, "output": "\n".join(logs)[-3000:]}
-        ok = await _step(
-            _as_user_cmd(username, "paru -S --noconfirm --needed opera"),
             timeout=1800,
             extra_env={"HOME": home},
         )
@@ -4688,7 +4672,6 @@ async def apps_install(req: Request):
 # --- デスクトップショートカット (4-desktopicon.sh 方式) ---
 SHORTCUT_DEFS: dict[str, dict] = {
     "google-chrome": {"label": "Google Chrome", "candidates": ["google-chrome.desktop"]},
-    "opera": {"label": "Opera", "candidates": ["opera.desktop"]},
     "thunderbird": {"label": "Thunderbird", "candidates": ["thunderbird.desktop", "org.mozilla.Thunderbird.desktop"]},
     "libreoffice-calc": {"label": "LibreOffice Calc", "candidates": ["libreoffice-calc.desktop", "org.libreoffice.calc.desktop"]},
     "libreoffice-writer": {"label": "LibreOffice Writer", "candidates": ["libreoffice-writer.desktop", "org.libreoffice.writer.desktop"]},
