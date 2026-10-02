@@ -2555,6 +2555,7 @@ async function restoreSnapper(number) {
 const APPS_INSTALL_DEFS = [
   { key: 'japanese', label: '日本語入力', desc: 'fcitx5 + Mozc を導入し日本語入力を設定 (cachyos-mozcjp.sh と同じ内容)' },
   { key: 'chrome', label: 'Google Chrome', desc: 'paru を導入し google-chrome をインストール' },
+  { key: 'edge', label: 'Microsoft Edge', desc: 'paru を導入し microsoft-edge-stable-bin をインストール' },
   { key: 'thunderbird', label: 'Thunderbird', desc: 'thunderbird + 日本語 language pack' },
   { key: 'libreoffice', label: 'LibreOffice', desc: 'libreoffice-fresh-ja (日本語版)' },
   { key: 'vlc', label: 'VLC', desc: 'vlc メディアプレイヤー' },
@@ -2851,7 +2852,7 @@ async function installSelectedApps() {
   }
   const keys = checks.map(c => c.value);
   const labels = keys.map(k => (APPS_INSTALL_DEFS.find(d => d.key === k) || {}).label || k).join(', ');
-  if (!confirm(`以下のアプリをインストールしますか？\n\n${labels}\n\n時間がかかる場合があります (Chrome のビルド等)。完了までこのページを開いたままお待ちください。`)) return;
+  if (!confirm(`以下のアプリをインストールしますか？\n\n${labels}\n\n時間がかかる場合があります (Chrome / Edge のビルド等)。完了までこのページを開いたままお待ちください。`)) return;
   const statusEl = document.getElementById('apps-install-status');
   const btn = document.getElementById('btn-apps-install');
   btn.disabled = true;
