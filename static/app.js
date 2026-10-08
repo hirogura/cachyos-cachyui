@@ -616,7 +616,7 @@ async function upgradeCachyAll() {
 // 確認・Y・レビューは --noconfirm/-y でスキップする。
 function cachyUpdateTerminal() {
   if (!confirm('Cachy-Updateをターミナルで実行しますか？\n\nターミナル画面に移動し、公式 → AUR → Flatpak → 孤立PKG除去 → キャッシュ削除の順に更新します。\n確認・レビューは --noconfirm/-y でスキップされます。')) return;
-  const cmd = 'sudo pacman -Syu --noconfirm; H=$(command -v paru || command -v yay || command -v pikaur); if [ -n "$H" ]; then $H -Syu --noconfirm; fi; if command -v flatpak >/dev/null 2>&1; then sudo flatpak update -y; fi; O=$(pacman -Qdtq 2>/dev/null); if [ -n "$O" ]; then sudo pacman -Rns --noconfirm $(pacman -Qdtq); fi; if command -v paccache >/dev/null 2>&1; then sudo paccache -rk3 && sudo paccache -ruk0; fi';
+  const cmd = "bash -c 'sudo pacman -Syu --noconfirm; H=$(command -v paru || command -v yay || command -v pikaur); if [ -n \"$H\" ]; then $H -Syu --noconfirm; fi; if command -v flatpak >/dev/null 2>&1; then sudo flatpak update -y; fi; O=$(pacman -Qdtq 2>/dev/null); if [ -n \"$O\" ]; then sudo pacman -Rns --noconfirm $(pacman -Qdtq); fi; if command -v paccache >/dev/null 2>&1; then sudo paccache -rk3 && sudo paccache -ruk0; fi'";
   sendToTerminal(cmd, 'Cachy-Updateをターミナルで実行します');
 }
 
