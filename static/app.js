@@ -686,7 +686,10 @@ async function upgradeAll() {
   }
 }
 
+let _fixingPackages = false;
 async function fixPackages() {
+  if (_fixingPackages) return;
+  _fixingPackages = true;
   const status = document.getElementById('package-status');
   status.className = 'status-msg show info';
   status.innerHTML = '<span class="spinner"></span> パッケージの依存関係を修復中...';
@@ -698,14 +701,42 @@ async function fixPackages() {
       status.className = 'status-msg show success';
       status.textContent = 'パッケージの依存関係を修復しました。';
       checkUpdates();
-    } else {
-      status.className = 'status-msg show error';
-      const cleanErr = sanitizeAptError(data.errors);
-      status.textContent = cleanErr ? `修復に失敗しました: ${cleanErr}` : '修復に失敗しました。';
+      return;
     }
+    // db.lck残留時は確認ダイアログ→除去付き再実行
+    if (data.need_lck_confirm) {
+      if (!confirm('db.lckを削除して再試行しますか？')) {
+        status.className = 'status-msg show error';
+        const cleanErr = sanitizeAptError(data.errors);
+        status.textContent = cleanErr ? `修復に失敗しました: ${cleanErr}` : '修復に失敗しました。';
+        return;
+      }
+      status.innerHTML = '<span class="spinner"></span> db.lckを削除して再修復中...';
+      const resp2 = await fetch('/api/packages/fix', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ remove_lock: true }),
+      });
+      const data2 = await resp2.json();
+      if (data2.success) {
+        status.className = 'status-msg show success';
+        status.textContent = 'db.lckを削除して修復しました。';
+        checkUpdates();
+      } else {
+        status.className = 'status-msg show error';
+        const cleanErr2 = sanitizeAptError(data2.errors);
+        status.textContent = cleanErr2 ? `修復に失敗しました: ${cleanErr2}` : '修復に失敗しました。';
+      }
+      return;
+    }
+    status.className = 'status-msg show error';
+    const cleanErr = sanitizeAptError(data.errors);
+    status.textContent = cleanErr ? `修復に失敗しました: ${cleanErr}` : '修復に失敗しました。';
   } catch (e) {
     status.className = 'status-msg show error';
     status.textContent = `エラー: ${e.message}`;
+  } finally {
+    _fixingPackages = false;
   }
 }
 

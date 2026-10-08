@@ -546,17 +546,67 @@ async def upgrade_single_package(package_name: str):
     }
 
 
+# db.lck検出・除去再実行用ヘルパー (修復APIの多重起動防止ロック含む)
+_fix_packages_lock = asyncio.Lock()
+
+
+def _is_db_lock_error(text: str) -> bool:
+    """pacmanのdb.lck残留エラーを検出する。"""
+    if not text:
+        return False
+    low = text.lower()
+    return ("db.lck" in low or "データベースをロック" in text
+            or "could not lock database" in low or "failed to synchronize" in low
+            or "ファイルが存在します" in text)
+
+
 @app.post("/api/packages/fix")
-async def fix_packages():
+async def fix_packages(req: Request):
     """Refresh databases and repair keyrings (pacman)."""
-    r1 = await run_cmd(_sudo("pacman -Syy --noconfirm"), timeout=300)
-    r2 = await run_cmd(_sudo("pacman -S --noconfirm --needed archlinux-keyring cachyos-keyring"), timeout=300)
-    success = (r1["returncode"] == 0) and (r2["returncode"] == 0)
-    return {
-        "success": success,
-        "output": (r1["stdout"] + "\n" + r2["stdout"]).strip(),
-        "errors": (r1["stderr"] + "\n" + r2["stderr"]).strip(),
-    }
+    # db.lck残留時は need_lck_confirm:true を返し、フロントの確認後に
+    # {"remove_lock": true} 付きで再呼出しされるとロック除去後に再実行する。
+    remove_lock = False
+    try:
+        body = await req.json()
+        if isinstance(body, dict):
+            remove_lock = bool(body.get("remove_lock") or body.get("remove_lck"))
+    except Exception:
+        remove_lock = False
+
+    # 多重起動防止
+    if _fix_packages_lock.locked():
+        return {"success": False, "output": "", "errors": "修復処理が実行中のため、完了後に再試行してください。",
+                "need_lck_confirm": False}
+    async with _fix_packages_lock:
+        removed_lck = False
+        if remove_lock:
+            r_rm = await run_cmd(_sudo(f"rm -f {shlex.quote(PACMAN_DB_LOCK)}"), timeout=15)
+            removed_lck = r_rm["returncode"] == 0 and not await asyncio.to_thread(_pacman_dblock_exists)
+            if not removed_lck:
+                err = ((r_rm["stderr"] or r_rm["stdout"]).strip() or "ロックファイルが残っています")[:500]
+                return {"success": False, "output": "", "errors": f"db.lckの削除に失敗しました: {err}",
+                        "need_lck_confirm": False, "removed_lck": False}
+        r1 = await run_cmd(_sudo("pacman -Syy --noconfirm"), timeout=300)
+        r2 = await run_cmd(_sudo("pacman -S --noconfirm --needed archlinux-keyring cachyos-keyring"), timeout=300)
+        success = (r1["returncode"] == 0) and (r2["returncode"] == 0)
+        output = (r1["stdout"] + "\n" + r2["stdout"]).strip()
+        errors = (r1["stderr"] + "\n" + r2["stderr"]).strip()
+        resp = {
+            "success": success,
+            "output": output,
+            "errors": errors,
+        }
+        if removed_lck:
+            resp["removed_lck"] = True
+        if not success and _is_db_lock_error(output + "\n" + errors):
+            resp["need_lck_confirm"] = True
+            try:
+                resp["lck_exists"] = await asyncio.to_thread(_pacman_dblock_exists)
+            except Exception:
+                pass
+        else:
+            resp["need_lck_confirm"] = False
+        return resp
 
 
 @app.post("/api/packages/force-upgrade")
