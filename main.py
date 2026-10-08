@@ -765,7 +765,9 @@ async def cachy_update_check():
 
 @app.post("/api/packages/cachy-update/upgrade")
 async def cachy_update_upgrade():
-    """Cachy-Update と同じ一括更新 (公式 -> AUR -> Flatpak の順に更新)。"""
+    """Cachy-Update と同じ一括更新 (公式 -> AUR -> Flatpak -> 孤立PKG除去 -> キャッシュ削除の順に更新)。
+    デスクトップ版 cachy-update (arch-update full_upgrade.sh) と同等フロー。
+    確認・レビューは --noconfirm/-y でスキップする。"""
     username, home, _shell = get_primary_user()
     logs: list[str] = []
     errors: list[str] = []
@@ -796,6 +798,30 @@ async def cachy_update_upgrade():
             errors.append("[Flatpak]\n" + ((r3["stderr"] or r3["stdout"]) or "").strip())
     else:
         logs.append("[Flatpak]\nFlatpak がない/アプリがないためスキップしました")
+
+    # デスクトップ版と同様に孤立パッケージを除去する (レビュースキップ=自動除去)。
+    r4 = await run_cmd("pacman -Qdtq 2>/dev/null", timeout=30)
+    orphans = [l.strip() for l in (r4["stdout"] or "").splitlines() if l.strip()]
+    if not orphans:
+        logs.append("[孤立パッケージ]\n削除すべき孤立パッケージはありません")
+    else:
+        r5 = await run_cmd(_sudo("pacman -Rns --noconfirm $(pacman -Qdtq)"), timeout=600)
+        logs.append("[孤立パッケージ]\n" + (r5["stdout"] or "").strip())
+        if r5["returncode"] != 0:
+            overall = False
+            errors.append("[孤立パッケージ]\n" + ((r5["stderr"] or r5["stdout"]) or "").strip())
+
+    # デスクトップ版と同様にパッケージキャッシュを削除する (paccache既定値: 旧3世代保持・未導入0)。
+    chk_cache = await run_cmd("which paccache 2>/dev/null", timeout=5)
+    if chk_cache["returncode"] != 0:
+        logs.append("[キャッシュ]\npaccache がないためスキップしました")
+    else:
+        r6 = await run_cmd(_sudo("paccache -rk3"), timeout=600)
+        r7 = await run_cmd(_sudo("paccache -ruk0"), timeout=600)
+        logs.append("[キャッシュ]\n" + ((r6["stdout"] or "").strip() + "\n" + (r7["stdout"] or "").strip()).strip())
+        if r6["returncode"] != 0 or r7["returncode"] != 0:
+            overall = False
+            errors.append("[キャッシュ]\n" + ((r6["stderr"] or "") + "\n" + (r7["stderr"] or "")).strip())
 
     return {
         "success": overall,
