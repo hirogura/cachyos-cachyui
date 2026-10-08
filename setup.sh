@@ -5,11 +5,12 @@
 # serv-UI (Ubuntu/GRUB/apt) を CachyOS (Limine/pacman) に移植した
 # cachy-UI のセットアップスクリプト。
 #
-# Usage: sudo bash setup.sh [--branch <name>] [--no-restart]
+# Usage: sudo bash setup.sh [--branch <name>] [--no-restart] [--skip-sysupdate]
 #
 # Options:
 #   --branch <name>   Install from the given branch (default: main)
 #   --no-restart      Deploy files only; restart cachy-UI manually
+#   --skip-sysupdate  システム全体更新 (pacman -Syu) を行わず cachy-UIのみ更新する
 #
 # This script:
 # 1. Installs system dependencies (pacman)
@@ -35,6 +36,7 @@ APP_PORT=3355
 REPO_URL="https://github.com/hirogura/cachyos-cachyui.git"
 BRANCH="main"
 NO_RESTART=0
+SKIP_SYSUPDATE=0
 
 log() { echo -e "${GREEN}[✔]${NC} $1"; }
 warn() { echo -e "${YELLOW}[!]${NC} $1"; }
@@ -51,6 +53,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-restart)
       NO_RESTART=1
+      shift
+      ;;
+    --skip-sysupdate)
+      SKIP_SYSUPDATE=1
       shift
       ;;
     *)
@@ -95,11 +101,31 @@ if ! tailscale status &>/dev/null; then
 fi
 
 # --- Install dependencies (CachyOS/pacman) ---
-log "Installing system dependencies..."
-remove_stale_pacman_lock
-pacman -Syu --needed --noconfirm python python-pip python-virtualenv git \
-  networkmanager iw wpa_supplicant wget efibootmgr tailscale \
-  pacman-contrib parted dosfstools e2fsprogs
+# --skip-sysupdate 指定時 (cachy-UIアップデート経由) はシステム全体更新を行わず、
+# 不足パッケージのみ導入する (Arch系はシステム更新トラブルが多いためUI更新と分離)。
+if [[ $SKIP_SYSUPDATE -eq 1 ]]; then
+  log "システム更新をスキップします (cachy-UIのみ更新)..."
+  SYSDEPS=(python python-pip python-virtualenv git \
+    networkmanager iw wpa_supplicant wget efibootmgr tailscale \
+    pacman-contrib parted dosfstools e2fsprogs)
+  MISSING=()
+  for pkg in "${SYSDEPS[@]}"; do
+    pacman -Q "$pkg" &>/dev/null || MISSING+=("$pkg")
+  done
+  if [[ ${#MISSING[@]} -eq 0 ]]; then
+    info "依存パッケージは充足済みのため pacman を実行しません"
+  else
+    warn "不足パッケージを導入します (システム全体は更新しません): ${MISSING[*]}"
+    remove_stale_pacman_lock
+    pacman -S --needed --noconfirm "${MISSING[@]}"
+  fi
+else
+  log "Installing system dependencies..."
+  remove_stale_pacman_lock
+  pacman -Syu --needed --noconfirm python python-pip python-virtualenv git \
+    networkmanager iw wpa_supplicant wget efibootmgr tailscale \
+    pacman-contrib parted dosfstools e2fsprogs
+fi
 
 # --- Create app user ---
 if ! id "$APP_USER" &>/dev/null; then

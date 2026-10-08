@@ -2204,6 +2204,8 @@ async def system_selfupdate():
     The updater runs independently of this server, so it always finishes
     even though the files being replaced belong to the running service.
     完了後はフロントエンドが自動で再起動→リフレッシュを実行する。
+    システム全体更新 (pacman -Syu) は行わず cachy-UIのみ更新する。
+    システム更新はパッケージ管理/Cachy-Updateから個別に実行する。
     """
     try:
         with open(CACHYUI_UPDATE_PID, encoding="utf-8") as f:
@@ -2223,7 +2225,7 @@ async def system_selfupdate():
         f"trap 'rm -f {CACHYUI_UPDATE_PID}' EXIT",
         f"exec > {CACHYUI_UPDATE_LOG} 2>&1",
         'echo "[cachy-UI update] start $(date)"',
-        # 中断したpacmanの残留ロックがあると setup.sh 内の pacman -Syu が
+        # 中断したpacmanの残留ロックがあると setup.sh 内の不足パッケージ導入が
         # 「データベースをロック出来ません」で失敗するため、事前に除去する。
         # pacman実行中は安全のため中断する。
         'if [ -e /var/lib/pacman/db.lck ]; then',
@@ -2237,7 +2239,7 @@ async def system_selfupdate():
         'fi',
         "rm -rf /tmp/cachyui-update",
         "git clone --depth 1 https://github.com/hirogura/cachyos-cachyui.git /tmp/cachyui-update",
-        "bash /tmp/cachyui-update/setup.sh --no-restart",
+        "bash /tmp/cachyui-update/setup.sh --no-restart --skip-sysupdate",
         'echo "[cachy-UI update] done $(date)"',
         "echo __CACHYUI_UPDATE_DONE__",
     ]) + "\n"
