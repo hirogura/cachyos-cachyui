@@ -2197,6 +2197,18 @@ async def system_selfupdate():
         f"trap 'rm -f {CACHYUI_UPDATE_PID}' EXIT",
         f"exec > {CACHYUI_UPDATE_LOG} 2>&1",
         'echo "[cachy-UI update] start $(date)"',
+        # 中断したpacmanの残留ロックがあると setup.sh 内の pacman -Syu が
+        # 「データベースをロック出来ません」で失敗するため、事前に除去する。
+        # pacman実行中は安全のため中断する。
+        'if [ -e /var/lib/pacman/db.lck ]; then',
+        '  if pgrep -x pacman >/dev/null 2>&1 || pgrep -f "pacman -S" >/dev/null 2>&1; then',
+        '    echo "ERROR: pacmanが実行中のためアップデートを中断します (db.lck存在)" >&2',
+        '    exit 1',
+        '  else',
+        '    echo "[cachy-UI update] removing stale pacman lock"',
+        '    rm -f /var/lib/pacman/db.lck',
+        '  fi',
+        'fi',
         "rm -rf /tmp/cachyui-update",
         "git clone --depth 1 https://github.com/hirogura/cachyos-cachyui.git /tmp/cachyui-update",
         "bash /tmp/cachyui-update/setup.sh --no-restart",

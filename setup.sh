@@ -66,9 +66,24 @@ fi
 
 info "Installing cachy-UI from branch: ${BRANCH}"
 
+# --- pacmanロック残留の対策 (中断したpacmanがdb.lckを残すと更新できないため) ---
+# pacman実行中でなければ残留ロックを除去する。実行中なら中断して再実行を促す。
+remove_stale_pacman_lock() {
+  if [[ -e /var/lib/pacman/db.lck ]]; then
+    if pgrep -x pacman >/dev/null 2>&1 || pgrep -f "pacman -S" >/dev/null 2>&1; then
+      err "pacmanが実行中のため中断します (db.lck存在)。完了後に再実行してください。"
+    else
+      warn "残留ロック /var/lib/pacman/db.lck を削除します (pacman実行なし確認済み)"
+      rm -f /var/lib/pacman/db.lck
+    fi
+  fi
+}
+remove_stale_pacman_lock
+
 # --- Check Tailscale is installed ---
 if ! command -v tailscale &>/dev/null; then
   warn "Tailscale is not installed. Installing now..."
+  remove_stale_pacman_lock
   pacman -S --needed --noconfirm tailscale
 fi
 
@@ -81,6 +96,7 @@ fi
 
 # --- Install dependencies (CachyOS/pacman) ---
 log "Installing system dependencies..."
+remove_stale_pacman_lock
 pacman -Syu --needed --noconfirm python python-pip python-virtualenv git \
   networkmanager iw wpa_supplicant wget efibootmgr tailscale \
   pacman-contrib parted dosfstools e2fsprogs
