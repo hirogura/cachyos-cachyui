@@ -2973,7 +2973,74 @@ async function loadAppsStatus() {
   }
 }
 
-async function installSelectedApps() {
+const MOZC_SETUP_URL = 'https://raw.githubusercontent.com/hirogura/scripts/main/cachyos-mozcjp.sh';
+
+function buildAppInstallScript(keys) {
+  const cmds = {
+    japanese: [
+      "echo '==> 日本語入力 (fcitx5 + Mozc) をセットアップします'",
+      `sudo env SUDO_USER="$(id -un)" HOME="$HOME" bash -c "curl -fsSL '${MOZC_SETUP_URL}' | bash"`
+    ],
+    chrome: [
+      "echo '==> Google Chrome をインストールします'",
+      "sudo pacman -S --noconfirm --needed paru && paru -S --noconfirm --needed google-chrome"
+    ],
+    edge: [
+      "echo '==> Microsoft Edge をインストールします'",
+      "sudo pacman -S --noconfirm --needed paru && paru -S --noconfirm --needed microsoft-edge-stable-bin"
+    ],
+    thunderbird: [
+      "echo '==> Thunderbird をインストールします'",
+      "sudo pacman -S --noconfirm --needed thunderbird thunderbird-i18n-ja"
+    ],
+    libreoffice: [
+      "echo '==> LibreOffice をインストールします'",
+      "sudo pacman -S --noconfirm --needed libreoffice-fresh-ja"
+    ],
+    vlc: [
+      "echo '==> VLC をインストールします'",
+      "sudo pacman -S --noconfirm --needed vlc"
+    ],
+    ssh: [
+      "echo '==> SSH を設定します'",
+      "sudo systemctl enable --now sshd",
+      "if command -v ufw >/dev/null 2>&1; then sudo ufw allow ssh; else echo 'ufw がインストールされていないためファイアウォール設定をスキップしました (sshd 自体は有効化済み)'; fi"
+    ],
+    rdp: [
+      "echo '==> リモートデスクトップ (krdp) をインストールします'",
+      "sudo pacman -S --noconfirm --needed krdp"
+    ],
+  };
+
+  const lines = [
+    '#!/bin/bash',
+    'set -u',
+    'overall=0',
+    `echo "=== cachy-UI アプリインストール開始: $(date) ==="`,
+    '',
+  ];
+  for (const key of keys) {
+    const label = (APPS_INSTALL_DEFS.find(d => d.key === key) || {}).label || key;
+    const steps = cmds[key];
+    if (!steps) continue;
+    lines.push(`echo ""`);
+    lines.push(`echo "----- ${label} -----"`);
+    lines.push('(');
+    for (const s of steps) lines.push(`  ${s}`);
+    lines.push(')');
+    lines.push('rc=$?');
+    lines.push(`if [ $rc -eq 0 ]; then echo "[OK] ${label}"; else echo "[NG] ${label} (exit=$rc)"; overall=1; fi`);
+  }
+  lines.push('');
+  lines.push(`echo ""`);
+  lines.push(`echo "=== 完了: $(date) ==="`);
+  lines.push('if [ $overall -eq 0 ]; then echo "結果: すべて成功しました"; else echo "結果: 一部失敗しました（上のログを確認してください）"; fi');
+  lines.push('echo "このウィンドウのアプリ一覧を更新するには「アプリ/設定」タブを再読み込みしてください。"');
+  lines.push('exit $overall');
+  return lines.join('\n');
+}
+
+function installSelectedApps() {
   const checks = Array.from(document.querySelectorAll('.apps-install-check:checked'));
   if (checks.length === 0) {
     showStatus('インストールするアプリを選択してください', 'error');
@@ -2981,39 +3048,14 @@ async function installSelectedApps() {
   }
   const keys = checks.map(c => c.value);
   const labels = keys.map(k => (APPS_INSTALL_DEFS.find(d => d.key === k) || {}).label || k).join(', ');
-  if (!confirm(`以下のアプリをインストールしますか？\n\n${labels}\n\n時間がかかる場合があります (Chrome / Edge のビルド等)。完了までこのページを開いたままお待ちください。`)) return;
+  if (!confirm(`以下のアプリをターミナルでインストールしますか？\n\n${labels}\n\n時間がかかる場合があります (Chrome / Edge のビルド等)。ターミナルに移行して進捗を表示します。`)) return;
   const statusEl = document.getElementById('apps-install-status');
-  const btn = document.getElementById('btn-apps-install');
-  btn.disabled = true;
   statusEl.className = 'status-msg show info';
-  statusEl.innerHTML = '<span class="spinner"></span> インストール中... (数分かかる場合があります)';
-  try {
-    const resp = await fetch('/api/apps/install', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ apps: keys }),
-    });
-    const data = await resp.json().catch(() => ({}));
-    btn.disabled = false;
-    if (!resp.ok) {
-      throw new Error(data.detail || `HTTP ${resp.status}`);
-    }
-    const results = data.results || {};
-    const lines = keys.map(k => {
-      const r = results[k] || {};
-      const label = (APPS_INSTALL_DEFS.find(d => d.key === k) || {}).label || k;
-      return `${r.success ? '✅' : '❌'} ${label}`;
-    }).join('\n');
-    statusEl.className = `status-msg show ${data.success ? 'success' : 'error'}`;
-    statusEl.textContent = `${data.message || ''}\n${lines}`;
-    showStatus(data.message || 'インストールが完了しました', data.success ? 'success' : 'error');
-    loadAppsStatus();
-    loadAppsShortcuts();
-  } catch (e) {
-    btn.disabled = false;
-    statusEl.className = 'status-msg show error';
-    statusEl.textContent = `エラー: ${e.message}`;
-  }
+  statusEl.textContent = 'ターミナルに移行してインストールを開始します。進捗はターミナルで確認できます。完了後「アプリ/設定」タブを再読み込みしてください。';
+
+  const script = buildAppInstallScript(keys);
+  const cmd = `cat > /tmp/cachyui-app-install.sh <<'CACHYUI_INSTALL'\n${script}\nCACHYUI_INSTALL\nbash /tmp/cachyui-app-install.sh; rm -f /tmp/cachyui-app-install.sh`;
+  sendToTerminal(cmd, 'ターミナルでアプリのインストールを開始します');
 }
 
 async function loadAppsShortcuts() {
