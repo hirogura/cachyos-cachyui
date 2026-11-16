@@ -3054,7 +3054,9 @@ function installSelectedApps() {
   statusEl.textContent = 'ターミナルに移行してインストールを開始します。進捗はターミナルで確認できます。完了後「アプリ/設定」タブを再読み込みしてください。';
 
   const script = buildAppInstallScript(keys);
-  const cmd = `cat > /tmp/cachyui-app-install.sh <<'CACHYUI_INSTALL'\n${script}\nCACHYUI_INSTALL\nbash /tmp/cachyui-app-install.sh; rm -f /tmp/cachyui-app-install.sh`;
+  // 改行を含む heredoc をそのまま送ると環境によって1行に潰れて壊れるため、base64 で安全に転送する
+  const b64 = btoa(unescape(encodeURIComponent(script)));
+  const cmd = `printf '%s' '${b64}' | base64 -d > /tmp/cachyui-app-install.sh && bash /tmp/cachyui-app-install.sh; rm -f /tmp/cachyui-app-install.sh`;
   sendToTerminal(cmd, 'ターミナルでアプリのインストールを開始します');
 }
 
