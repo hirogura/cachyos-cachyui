@@ -37,7 +37,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="cachy-UI", version="3.3.0")
+app = FastAPI(title="cachy-UI", version="3.3.1")
 
 
 @app.middleware("http")
@@ -904,10 +904,15 @@ def _build_term_env(target_user: str, target_home: str, target_shell: str) -> di
         if os.path.isdir(keyring_dir):
             env["GNOME_KEYRING_CONTROL"] = keyring_dir
 
-    # Add ~/.local/bin to PATH (for CLI tools like agy)
-    local_bin = os.path.join(target_home, ".local", "bin")
-    if os.path.isdir(local_bin):
-        env["PATH"] = f"{local_bin}:{env.get('PATH', '/usr/local/bin:/usr/bin:/bin')}"
+    # CLI ツールのインストール先を PATH に追加（selfcode と同じ扱い）。
+    # opencode は ~/.opencode/bin、agy などは ~/.local/bin に入るため、
+    # シェルの設定ファイルに依存せずターミナルから直接起動できるようにする。
+    for extra_bin in (
+        os.path.join(target_home, ".opencode", "bin"),
+        os.path.join(target_home, ".local", "bin"),
+    ):
+        if os.path.isdir(extra_bin):
+            env["PATH"] = f"{extra_bin}:{env.get('PATH', '/usr/local/bin:/usr/bin:/bin')}"
 
     return env
 
