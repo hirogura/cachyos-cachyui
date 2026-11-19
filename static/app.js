@@ -2998,14 +2998,18 @@ function renderSimdjsonDowngrade(data) {
     ? '<span class="badge badge-active">戻せます</span>'
     : '<span class="badge badge-warn">キャッシュなし</span>';
   if (detailEl) {
-    detailEl.textContent = `現在の simdjson: ${data.installed || '不明'}${data.package ? ` / 切り戻し用: ${data.package}` : ''}`;
+    const parts = [];
+    if (data.installed) parts.push(`現在: ${data.installed}`);
+    if (data.candidate) parts.push(`切り戻し先: ${data.candidate}`);
+    if (data.package) parts.push(`キャッシュ: ${data.package}`);
+    detailEl.textContent = parts.join(' / ') || '情報なし';
   }
 }
 
 async function revertSimdjson() {
   const statusEl = document.getElementById('simdjson-status');
   const btn = document.getElementById('btn-simdjson-run');
-  if (!confirm('旧 simdjson (2:5.1.1-1.1) に戻しますか？\n\nnodejs が libsimdjson.so.36 不足で起動しなくなった場合の応急処置です。\nキャッシュ済みパッケージで上書きし、selfcode / easy-lxd サービスを再起動します。\nIgnorePkg は設定しません。nodejs が再ビルドされたら通常の更新に戻してください。')) return;
+  if (!confirm('旧 simdjson に戻しますか？\n\nnodejs が旧 libsimdjson 不足で起動しなくなった場合の応急処置です。\nキャッシュ済みから更新直前のバージョンを自動選択して上書きし、selfcode / easy-lxd サービスを再起動します。\nIgnorePkg は設定しません。nodejs が再ビルドされたら通常の更新に戻してください。')) return;
   if (btn) btn.disabled = true;
   if (statusEl) {
     statusEl.className = 'status-msg show info';

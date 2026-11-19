@@ -27,6 +27,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from datetime import datetime
+from functools import cmp_to_key
 from pathlib import Path
 
 import psutil
@@ -37,7 +38,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="cachy-UI", version="3.3.2")
+app = FastAPI(title="cachy-UI", version="3.3.3")
 
 
 @app.middleware("http")
@@ -2650,25 +2651,69 @@ async def pacman_dblock_remove():
 # ============================================================
 # 7.7 旧 simdjson に戻す (nodejs が再ビルドされるまでの応急処置)
 # ============================================================
-# cachyupdate (pacman -Syu) で simdjson が 2:5.2.0 に更新されると
-# libsimdjson.so.36 が消え、旧 SONAME にリンクされた nodejs が起動不可になる。
-# pacman の依存はパッケージ名単位なので SONAME 変更を検出できず nodejs が
-# 再ビルドされない。キャッシュ済みの旧版に手動で戻し、node 依存サービス
-# (selfcode / easy-lxd) を再起動する。IgnorePkg は設定しない。
+# cachyupdate (pacman -Syu) で simdjson が更新されると libsimdjson.so.36 が
+# 消え、旧 SONAME にリンクされた nodejs が起動不可になる。pacman の依存は
+# パッケージ名単位なので SONAME 変更を検出できず nodejs が再ビルドされない。
+# キャッシュ済み旧版に手動で戻し、node 依存サービス (selfcode / easy-lxd) を
+# 再起動する。IgnorePkg は設定しない。
+# 戻すバージョンは固定せず、キャッシュから vercmp で「更新後のバージョンの
+# 直前」を自動選択する (将来 simdjson が更新されても同じ操作で戻せる)。
 SIMDJSON_CACHE_DIR = "/var/cache/pacman/pkg"
-SIMDJSON_DOWNGRADE_PKG = "simdjson-2:5.1.1-1.1-x86_64_v3.pkg.tar.zst"
 SIMDJSON_SERVICES = "selfcode.service easy-lxd.service"
+_SIMDJSON_CACHE_RE = re.compile(
+    r"^simdjson-(?:(\d+):)?([^-]+)-([^-]+)-([^-]+)\.pkg\.tar(?:\.[^.]+)?$"
+)
 
 
-def _simdjson_downgrade_path() -> str | None:
-    """キャッシュ済みの旧 simdjson パッケージのパスを返す。無ければ None。"""
-    exact = os.path.join(SIMDJSON_CACHE_DIR, SIMDJSON_DOWNGRADE_PKG)
-    if os.path.exists(exact):
-        return exact
-    # x86_64_v3 以外のビルドがキャッシュされている場合にも対応する
-    matches = sorted(glob.glob(os.path.join(
-        SIMDJSON_CACHE_DIR, "simdjson-2:5.1.1-1.1-*.pkg.tar.zst")))
-    return matches[0] if matches else None
+def _vercmp(a: str, b: str) -> int:
+    """pacman の vercmp で比較する (a<b: -1, a==b: 0, a>b: 1)。"""
+    try:
+        r = subprocess.run(["vercmp", a, b], capture_output=True, text=True, timeout=5)
+        if r.returncode == 0:
+            return int((r.stdout or "").strip() or "0")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    # vercmp が使えない場合のフォールバック (文字列比較)
+    return (a > b) - (a < b)
+
+
+def _simdjson_cached_versions() -> list[tuple[str, str, str]]:
+    """キャッシュ内の simdjson を [(バージョン, arch, パス), ...] 新しい順で返す。"""
+    items = []
+    for path in glob.glob(os.path.join(SIMDJSON_CACHE_DIR, "simdjson-*.pkg.tar.*")):
+        m = _SIMDJSON_CACHE_RE.match(os.path.basename(path))
+        if not m:
+            continue
+        epoch, pkgver, pkgrel, arch = m.groups()
+        version = f"{epoch}:{pkgver}-{pkgrel}" if epoch else f"{pkgver}-{pkgrel}"
+        items.append((version, arch, path))
+
+    def _cmp(x, y):
+        # バージョン降順。同一バージョンは x86_64_v3 を優先する。
+        c = _vercmp(y[0], x[0])
+        if c:
+            return c
+        return (0 if x[1] == "x86_64_v3" else 1) - (0 if y[1] == "x86_64_v3" else 1)
+
+    items.sort(key=cmp_to_key(_cmp))
+    return items
+
+
+def _simdjson_downgrade_candidate(installed: str | None) -> tuple[str, str, str] | None:
+    """切り戻し先 (バージョン, arch, パス) を返す。キャッシュが無ければ None。"""
+    cached = _simdjson_cached_versions()
+    if not cached:
+        return None
+    # 「更新後のバージョン」= インストール済みとキャッシュ内の最新のうち新しい方。
+    # 既に旧版へ戻している状態でも、直近の更新前バージョンを候補にできるようにする。
+    reference = cached[0][0]
+    if installed and _vercmp(installed, reference) > 0:
+        reference = installed
+    for item in cached:
+        if _vercmp(item[0], reference) < 0:
+            return item
+    # それより古いキャッシュが無い場合は最新を返す
+    return cached[0]
 
 
 async def _simdjson_installed_version() -> str | None:
@@ -2680,39 +2725,48 @@ async def _simdjson_installed_version() -> str | None:
     return parts[1] if len(parts) >= 2 else None
 
 
+async def _simdjson_state() -> dict:
+    """画面表示・切り戻しに必要な状態をまとめて返す。"""
+    installed = await _simdjson_installed_version()
+    candidate = await asyncio.to_thread(_simdjson_downgrade_candidate, installed)
+    return {
+        "installed": installed,
+        "candidate": candidate[0] if candidate else None,
+        "package": candidate[2] if candidate else None,
+        "exists": candidate is not None,
+    }
+
+
 @app.get("/api/system/simdjson-downgrade")
 async def simdjson_downgrade_status():
-    """切り戻し用キャッシュの有無とインストール済みバージョンを返す。"""
-    path = await asyncio.to_thread(_simdjson_downgrade_path)
-    version = await _simdjson_installed_version()
-    return {"exists": path is not None, "package": path, "installed": version}
+    """切り戻し先の候補とインストール済みバージョンを返す。"""
+    return await _simdjson_state()
 
 
 @app.post("/api/system/simdjson-downgrade")
 async def simdjson_downgrade_run():
-    """旧 simdjson に戻し、node 依存サービスを再起動する。"""
-    path = await asyncio.to_thread(_simdjson_downgrade_path)
+    """キャッシュ内の直前の旧 simdjson に戻し、node 依存サービスを再起動する。"""
+    state = await _simdjson_state()
+    path = state["package"]
     if not path:
-        return {"success": False, "exists": False, "package": None,
-                "installed": await _simdjson_installed_version(),
-                "message": "旧 simdjson のキャッシュが見つかりません (/var/cache/pacman/pkg/ を確認してください)。"}
+        return {"success": False, **state,
+                "message": "切り戻しに使える旧 simdjson のキャッシュが見つかりません (/var/cache/pacman/pkg/ を確認してください)。"}
 
     r = await run_cmd(_sudo(f"pacman -U --noconfirm {shlex.quote(path)}"), timeout=300)
     if r["returncode"] != 0:
         err = ((r["stderr"] or r["stdout"]).strip() or "理由不明")[:500]
-        return {"success": False, "exists": True, "package": path,
-                "installed": await _simdjson_installed_version(),
+        return {"success": False, **state,
                 "message": f"simdjson の切り戻しに失敗しました: {err}"}
 
-    version = await _simdjson_installed_version()
     srv = await run_cmd(_sudo(f"systemctl restart {SIMDJSON_SERVICES}"), timeout=60)
+    after = await _simdjson_state()
     if srv["returncode"] != 0:
         err = ((srv["stderr"] or srv["stdout"]).strip() or "理由不明")[:300]
-        return {"success": False, "exists": True, "package": path, "installed": version,
-                "message": f"simdjson を {version or '旧版'} に戻しましたが、selfcode / easy-lxd の再起動に失敗しました: {err}"}
+        return {"success": False, **after,
+                "message": f"simdjson を {after['installed'] or '旧版'} に戻しましたが、selfcode / easy-lxd の再起動に失敗しました: {err}"}
 
-    return {"success": True, "exists": True, "package": path, "installed": version,
-            "message": f"旧 simdjson ({version or '5.1.1-1.1'}) に戻し、selfcode / easy-lxd を再起動しました。nodejs が再ビルドされたら通常の更新に戻してください。"}
+    return {"success": True, **after,
+            "message": f"旧 simdjson ({after['installed'] or '旧版'}) に戻し、selfcode / easy-lxd を再起動しました。nodejs が再ビルドされたら通常の更新に戻してください。"}
 
 
 # ============================================================
