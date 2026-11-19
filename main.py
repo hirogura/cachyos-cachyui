@@ -37,7 +37,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="cachy-UI", version="3.3.1")
+app = FastAPI(title="cachy-UI", version="3.3.2")
 
 
 @app.middleware("http")
@@ -2645,6 +2645,74 @@ async def pacman_dblock_remove():
                 "exists": True, "path": PACMAN_DB_LOCK}
     return {"success": True, "message": "ロックファイルを削除しました。",
             "exists": False, "path": PACMAN_DB_LOCK}
+
+
+# ============================================================
+# 7.7 旧 simdjson に戻す (nodejs が再ビルドされるまでの応急処置)
+# ============================================================
+# cachyupdate (pacman -Syu) で simdjson が 2:5.2.0 に更新されると
+# libsimdjson.so.36 が消え、旧 SONAME にリンクされた nodejs が起動不可になる。
+# pacman の依存はパッケージ名単位なので SONAME 変更を検出できず nodejs が
+# 再ビルドされない。キャッシュ済みの旧版に手動で戻し、node 依存サービス
+# (selfcode / easy-lxd) を再起動する。IgnorePkg は設定しない。
+SIMDJSON_CACHE_DIR = "/var/cache/pacman/pkg"
+SIMDJSON_DOWNGRADE_PKG = "simdjson-2:5.1.1-1.1-x86_64_v3.pkg.tar.zst"
+SIMDJSON_SERVICES = "selfcode.service easy-lxd.service"
+
+
+def _simdjson_downgrade_path() -> str | None:
+    """キャッシュ済みの旧 simdjson パッケージのパスを返す。無ければ None。"""
+    exact = os.path.join(SIMDJSON_CACHE_DIR, SIMDJSON_DOWNGRADE_PKG)
+    if os.path.exists(exact):
+        return exact
+    # x86_64_v3 以外のビルドがキャッシュされている場合にも対応する
+    matches = sorted(glob.glob(os.path.join(
+        SIMDJSON_CACHE_DIR, "simdjson-2:5.1.1-1.1-*.pkg.tar.zst")))
+    return matches[0] if matches else None
+
+
+async def _simdjson_installed_version() -> str | None:
+    """インストール済み simdjson のバージョン (例: 2:5.1.1-1.1) を返す。"""
+    r = await run_cmd("pacman -Q simdjson", timeout=15)
+    if r["returncode"] != 0:
+        return None
+    parts = (r["stdout"] or "").strip().split()
+    return parts[1] if len(parts) >= 2 else None
+
+
+@app.get("/api/system/simdjson-downgrade")
+async def simdjson_downgrade_status():
+    """切り戻し用キャッシュの有無とインストール済みバージョンを返す。"""
+    path = await asyncio.to_thread(_simdjson_downgrade_path)
+    version = await _simdjson_installed_version()
+    return {"exists": path is not None, "package": path, "installed": version}
+
+
+@app.post("/api/system/simdjson-downgrade")
+async def simdjson_downgrade_run():
+    """旧 simdjson に戻し、node 依存サービスを再起動する。"""
+    path = await asyncio.to_thread(_simdjson_downgrade_path)
+    if not path:
+        return {"success": False, "exists": False, "package": None,
+                "installed": await _simdjson_installed_version(),
+                "message": "旧 simdjson のキャッシュが見つかりません (/var/cache/pacman/pkg/ を確認してください)。"}
+
+    r = await run_cmd(_sudo(f"pacman -U --noconfirm {shlex.quote(path)}"), timeout=300)
+    if r["returncode"] != 0:
+        err = ((r["stderr"] or r["stdout"]).strip() or "理由不明")[:500]
+        return {"success": False, "exists": True, "package": path,
+                "installed": await _simdjson_installed_version(),
+                "message": f"simdjson の切り戻しに失敗しました: {err}"}
+
+    version = await _simdjson_installed_version()
+    srv = await run_cmd(_sudo(f"systemctl restart {SIMDJSON_SERVICES}"), timeout=60)
+    if srv["returncode"] != 0:
+        err = ((srv["stderr"] or srv["stdout"]).strip() or "理由不明")[:300]
+        return {"success": False, "exists": True, "package": path, "installed": version,
+                "message": f"simdjson を {version or '旧版'} に戻しましたが、selfcode / easy-lxd の再起動に失敗しました: {err}"}
+
+    return {"success": True, "exists": True, "package": path, "installed": version,
+            "message": f"旧 simdjson ({version or '5.1.1-1.1'}) に戻し、selfcode / easy-lxd を再起動しました。nodejs が再ビルドされたら通常の更新に戻してください。"}
 
 
 # ============================================================

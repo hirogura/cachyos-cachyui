@@ -2724,6 +2724,7 @@ async function loadAppsPage() {
   await loadVentoyUI();
   await loadLidSwitch();
   await loadDblock();
+  await loadSimdjsonDowngrade();
 }
 
 // --- Webアプリ: Ventoy-UI ---
@@ -2956,6 +2957,70 @@ async function removeDbLock() {
     }
     showStatus(data.message || '', data.success ? 'success' : 'error');
     renderDblock(data);
+  } catch (e) {
+    if (statusEl) {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = `エラー: ${e.message}`;
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// --- 設定: nodejs が再ビルドされるまで旧 simdjson に戻す ---
+async function loadSimdjsonDowngrade() {
+  const badgeEl = document.getElementById('simdjson-badge');
+  const detailEl = document.getElementById('simdjson-detail');
+  const statusEl = document.getElementById('simdjson-status');
+  if (!badgeEl) return;
+  badgeEl.innerHTML = '<span class="badge badge-other">確認中...</span>';
+  if (detailEl) detailEl.textContent = '';
+  if (statusEl) { statusEl.className = 'status-msg'; statusEl.textContent = ''; }
+  try {
+    const resp = await fetch('/api/system/simdjson-downgrade');
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    renderSimdjsonDowngrade(data);
+  } catch (e) {
+    badgeEl.innerHTML = '<span class="badge badge-other">不明</span>';
+    if (statusEl) {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = `状態取得エラー: ${e.message}`;
+    }
+  }
+}
+
+function renderSimdjsonDowngrade(data) {
+  const badgeEl = document.getElementById('simdjson-badge');
+  const detailEl = document.getElementById('simdjson-detail');
+  if (!badgeEl) return;
+  badgeEl.innerHTML = data.exists
+    ? '<span class="badge badge-active">戻せます</span>'
+    : '<span class="badge badge-warn">キャッシュなし</span>';
+  if (detailEl) {
+    detailEl.textContent = `現在の simdjson: ${data.installed || '不明'}${data.package ? ` / 切り戻し用: ${data.package}` : ''}`;
+  }
+}
+
+async function revertSimdjson() {
+  const statusEl = document.getElementById('simdjson-status');
+  const btn = document.getElementById('btn-simdjson-run');
+  if (!confirm('旧 simdjson (2:5.1.1-1.1) に戻しますか？\n\nnodejs が libsimdjson.so.36 不足で起動しなくなった場合の応急処置です。\nキャッシュ済みパッケージで上書きし、selfcode / easy-lxd サービスを再起動します。\nIgnorePkg は設定しません。nodejs が再ビルドされたら通常の更新に戻してください。')) return;
+  if (btn) btn.disabled = true;
+  if (statusEl) {
+    statusEl.className = 'status-msg show info';
+    statusEl.innerHTML = '<span class="spinner"></span> 切り戻し中...';
+  }
+  try {
+    const resp = await fetch('/api/system/simdjson-downgrade', { method: 'POST' });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    if (statusEl) {
+      statusEl.className = `status-msg show ${data.success ? 'success' : 'error'}`;
+      statusEl.textContent = data.message || '';
+    }
+    showStatus(data.message || '', data.success ? 'success' : 'error');
+    renderSimdjsonDowngrade(data);
   } catch (e) {
     if (statusEl) {
       statusEl.className = 'status-msg show error';
