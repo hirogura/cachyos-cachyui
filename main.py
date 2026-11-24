@@ -38,7 +38,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="cachy-UI", version="3.4.7")
+app = FastAPI(title="cachy-UI", version="3.4.3")
 
 
 @app.middleware("http")
@@ -1925,32 +1925,26 @@ async def ventoyui_install():
 OPENCODE_DESKTOP_SERVE_PORT = 3379
 
 
-_PAIR_TOKEN_RE = re.compile(r"^[0-9]{10,}_[a-z0-9]{8}$")
-
-
-@app.get("/api/opencode-desktop/pair-result")
-async def opencode_desktop_pair_result(token: str = ""):
-    """Webターミナルで発行したペアリングリンクを一時ファイルから読み取る。"""
-    if not _PAIR_TOKEN_RE.fullmatch(token or ""):
-        raise HTTPException(status_code=400, detail="invalid token")
-    out = Path(f"/tmp/cachyui-pair-{token}.out")
-    done = Path(f"/tmp/cachyui-pair-{token}.done")
-    if not done.exists():
-        return {"ready": False}
-    text = out.read_text(encoding="utf-8", errors="replace") if out.exists() else ""
-    for p in (out, done):
-        try:
-            p.unlink()
-        except OSError:
-            pass
-    urls = re.findall(r"https?://[^\s'\"<>]+", text)
-    if urls:
+@app.post("/api/opencode-desktop/pair")
+async def opencode_desktop_pair():
+    """Web UI サインイン用のペアリングリンクを発行する (1回限り・5分で失効)。"""
+    username, home, _shell = get_primary_user()
+    base = await _tailscale_https_url(OPENCODE_DESKTOP_SERVE_PORT)
+    if not base:
+        return {"success": False,
+                "message": "Tailscale のホスト名を取得できませんでした。Tailscale の接続を確認してください。"}
+    base = base.rstrip("/")
+    r = await run_cmd(
+        _as_user_cmd(username, f"opencode pair --url {shlex.quote(base)}"),
+        timeout=30, extra_env={"HOME": home},
+    )
+    combined = ((r["stdout"] or "") + "\n" + (r["stderr"] or "")).strip()
+    urls = re.findall(r"https?://[^\s'\"<>]+", combined)
+    if r["returncode"] == 0 and urls:
         # トークン付きリンクはベース URL より長いため、最長のものを採用する。
         link = max(urls, key=len).rstrip(".,;)")
-        return {"ready": True, "success": True, "link": link}
-    return {"ready": True, "success": False,
-            "message": "ペアリングリンクを取得できませんでした。ターミナル出力を確認してください。",
-            "output": text[-500:]}
+        return {"success": True, "link": link}
+    return {"success": False, "message": combined[-500:] or "ペアリングリンクを取得できませんでした"}
 
 
 @app.get("/api/opencode-desktop/password")
@@ -1980,6 +1974,18 @@ async def opencode_desktop_url():
         return {"success": False,
                 "message": "Tailscale のホスト名を取得できませんでした。Tailscale の接続を確認してください。"}
     return {"success": True, "url": url}
+
+
+@app.post("/api/opencode-desktop/restart")
+async def opencode_desktop_restart():
+    """OpenCode のバックグラウンドサービスを再起動する。"""
+    username, home, _shell = get_primary_user()
+    r = await run_cmd(_as_user_cmd(username, "opencode service restart"),
+                      timeout=60, extra_env={"HOME": home})
+    output = (r["stdout"] or r["stderr"] or "").strip()[-500:]
+    if r["returncode"] != 0:
+        return {"success": False, "message": output or "OpenCodeサービスの再起動に失敗しました。"}
+    return {"success": True, "message": "OpenCodeサービスを再起動しました。", "output": output}
 
 
 # ============================================================

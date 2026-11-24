@@ -2876,12 +2876,23 @@ async function openOpenCodeDesktop() {
 }
 
 async function restartOpenCodeDesktop() {
-  // バックエンドの sudo -u 実行では opencode に必要な環境 (PATH / XDG_RUNTIME_DIR /
-  // D-Bus など) が失われるため、インストール時と同じ Web ターミナルで実行する。
-  // restart が無い CLI バージョンでは stop -> start にフォールバックする。
-  // fish では (cmd; cmd) がコマンド置換になるため /bin/bash -c で囲む。
-  const cmd = "/bin/bash -c 'opencode service restart || (opencode service stop; opencode service start)'";
-  await sendToTerminal(cmd, 'OpenCodeサービスを再起動しています。ターミナルで結果を確認してください。');
+  const el = document.getElementById('opencode-desktop-info');
+  if (el) {
+    el.className = 'status-msg show info';
+    el.textContent = 'OpenCodeサービスを再起動しています...';
+  }
+  try {
+    const resp = await fetch('/api/opencode-desktop/restart', { method: 'POST' });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    if (!data.success) throw new Error(data.message || '再起動に失敗しました');
+    if (el) {
+      el.className = 'status-msg show success';
+      el.textContent = data.message || 'OpenCodeサービスを再起動しました。';
+    }
+  } catch (e) {
+    showOpenCodeError(`OpenCodeサービスの再起動に失敗しました: ${e.message}`);
+  }
 }
 
 // --- Webアプリ: OpenCode Desktop のペアリングリンク / パスワード表示 ---
@@ -2911,37 +2922,19 @@ function showOpenCodeError(msg) {
 }
 
 async function showOpenCodePairLink() {
+  const el = document.getElementById('opencode-desktop-info');
+  if (el) {
+    el.className = 'status-msg show info';
+    el.textContent = 'ペアリングリンクを発行しています...';
+  }
   try {
-    const resp = await fetch('/api/opencode-desktop/url');
+    const resp = await fetch('/api/opencode-desktop/pair', { method: 'POST' });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
-    if (!data.success) throw new Error(data.message || 'URLを取得できませんでした');
-
-    // バックエンドの sudo -u 実行では opencode の環境が失われるため、
-    // 成功が確認できている Web ターミナルで発行し、結果をファイルで受け取る。
-    const token = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-    const out = `/tmp/cachyui-pair-${token}.out`;
-    const done = `/tmp/cachyui-pair-${token}.done`;
-    const cmd = `/bin/bash -c 'opencode pair --url ${data.url} > ${out} 2>&1; echo done > ${done}'`;
-    await sendToTerminal(cmd, 'ペアリングリンクを発行しています。ターミナルでも進捗を確認できます。');
-
-    for (let i = 0; i < 40; i++) {
-      await new Promise(r => setTimeout(r, 500));
-      const r2 = await fetch(`/api/opencode-desktop/pair-result?token=${encodeURIComponent(token)}`);
-      const d2 = await r2.json().catch(() => ({}));
-      if (!r2.ok) throw new Error(d2.detail || `HTTP ${r2.status}`);
-      if (d2.ready) {
-        if (d2.success) {
-          // ワンタイムリンクなのでクリックで消費されないよう文字として表示する。
-          showOpenCodeInfo('Pairing link (1回限り・5分で失効)', d2.link,
-                           'このリンクをブラウザで開くとサインインできます。');
-        } else {
-          showOpenCodeError(d2.message || 'ペアリングリンクを取得できませんでした。');
-        }
-        return;
-      }
-    }
-    showOpenCodeError('ペアリングリンクの発行がタイムアウトしました。ターミナル出力を確認してください。');
+    if (!data.success) throw new Error(data.message || 'ペアリングリンクを取得できませんでした');
+    // ワンタイムリンクなのでクリックで消費されないよう文字として表示する。
+    showOpenCodeInfo('Pairing link (1回限り・5分で失効)', data.link,
+                     'このリンクをブラウザで開くとサインインできます。');
   } catch (e) {
     showOpenCodeError(`ペアリングリンクの取得に失敗しました: ${e.message}`);
   }
