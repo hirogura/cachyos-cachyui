@@ -2876,23 +2876,11 @@ async function openOpenCodeDesktop() {
 }
 
 async function restartOpenCodeDesktop() {
-  const el = document.getElementById('opencode-desktop-info');
-  if (el) {
-    el.className = 'status-msg show info';
-    el.textContent = 'OpenCodeサービスを再起動しています...';
-  }
-  try {
-    const resp = await fetch('/api/opencode-desktop/restart', { method: 'POST' });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
-    if (!data.success) throw new Error(data.message || '再起動に失敗しました');
-    if (el) {
-      el.className = 'status-msg show success';
-      el.textContent = data.message || 'OpenCodeサービスを再起動しました。';
-    }
-  } catch (e) {
-    showOpenCodeError(`OpenCodeサービスの再起動に失敗しました: ${e.message}`);
-  }
+  // バックエンドの sudo -u 実行では opencode に必要な環境 (PATH / XDG_RUNTIME_DIR /
+  // D-Bus など) が失われるため、インストール時と同じ Web ターミナルで実行する。
+  // restart が無い CLI バージョンでは stop -> start にフォールバックする。
+  const cmd = 'opencode service restart || (opencode service stop; opencode service start)';
+  await sendToTerminal(cmd, 'OpenCodeサービスを再起動しています。ターミナルで結果を確認してください。');
 }
 
 // --- Webアプリ: OpenCode Desktop のペアリングリンク / パスワード表示 ---
