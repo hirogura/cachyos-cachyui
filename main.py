@@ -38,7 +38,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="cachy-UI", version="3.4.2")
+app = FastAPI(title="cachy-UI", version="3.4.3")
 
 
 @app.middleware("http")
@@ -1964,6 +1964,28 @@ async def opencode_desktop_password():
     if not isinstance(password, str) or not password:
         return {"success": False, "message": "パスワードが設定されていません。"}
     return {"success": True, "password": password}
+
+
+@app.get("/api/opencode-desktop/url")
+async def opencode_desktop_url():
+    """Tailscale Serve 経由の OpenCode Web UI URL を返す。"""
+    url = await _tailscale_https_url(OPENCODE_DESKTOP_SERVE_PORT)
+    if not url:
+        return {"success": False,
+                "message": "Tailscale のホスト名を取得できませんでした。Tailscale の接続を確認してください。"}
+    return {"success": True, "url": url}
+
+
+@app.post("/api/opencode-desktop/restart")
+async def opencode_desktop_restart():
+    """OpenCode のバックグラウンドサービスを再起動する。"""
+    username, home, _shell = get_primary_user()
+    r = await run_cmd(_as_user_cmd(username, "opencode service restart"),
+                      timeout=60, extra_env={"HOME": home})
+    output = (r["stdout"] or r["stderr"] or "").strip()[-500:]
+    if r["returncode"] != 0:
+        return {"success": False, "message": output or "OpenCodeサービスの再起動に失敗しました。"}
+    return {"success": True, "message": "OpenCodeサービスを再起動しました。", "output": output}
 
 
 # ============================================================

@@ -3,7 +3,7 @@
 Webベースの CachyOS 管理ツール。Tailscale内のHTTPS経由でアクセス可能。
 [serv-UI](https://github.com/hirogura/servui) (Ubuntu/GRUB/apt) を CachyOS (Limine/pacman) 用に移植したもの。
 
-現在のバージョン: **v3.4.2**
+現在のバージョン: **v3.4.3**
 
 ## serv-UI からの主な変更点
 
@@ -36,7 +36,7 @@ Webベースの CachyOS 管理ツール。Tailscale内のHTTPS経由でアクセ
 | selfEx / Disk Manager / selfcode / Easy LXD / VM Manager | 連携アプリの導入状態確認と起動。未インストールの場合は確認ダイアログ表示後にターミナルでインストール、インストール済みならサイトを新しいタブで開く |
 | バックアップ/復元 | /iso 内の Clonezilla Live ISO からカーネルを取り出して Limine 起動する無人パーティションバックアップ・復元 (cachyos-clonezilla-auto 方式)。SourceForge から Clonezilla Live ISO を選択・ダウンロードして /iso に保存可能 |
 | Snapper | snapper スナップショットの一覧・作成・復元 (rollback)・削除、複数一括削除、設定 (保持数など) とサブボリュームの管理 |
-| アプリ/設定 | よく使うアプリ (日本語入力・Chrome・Edge・Thunderbird・LibreOffice・VLC・SSH・リモートデスクトップ) のチェック式一括インストールとデスクトップショートカット作成 (cachyos-scripts の 3-soft.sh / 4-desktopicon.sh と同じ内容)。Ventoy-UI の導入、OpenCode Desktop の導入 (pacman + Tailscale Serve の HTTPS:3379 でテールネット内のみ公開) とペアリングリンク・パスワード表示、ノートPCの蓋閉じスリープ抑止、pacman ロックファイル削除、旧 simdjson への切り戻し (更新直前のバージョンを自動選択、nodejs 再ビルドまで) |
+| アプリ/設定 | よく使うアプリ (日本語入力・Chrome・Edge・Thunderbird・LibreOffice・VLC・SSH・リモートデスクトップ) のチェック式一括インストールとデスクトップショートカット作成 (cachyos-scripts の 3-soft.sh / 4-desktopicon.sh と同じ内容)。Ventoy-UI の導入、OpenCode Desktop の導入 (pacman + Tailscale Serve の HTTPS:3379 でテールネット内のみ公開) とペアリングリンク・パスワード表示、URLを開く・サービス再起動、ノートPCの蓋閉じスリープ抑止、pacman ロックファイル削除、旧 simdjson への切り戻し (更新直前のバージョンを自動選択、nodejs 再ビルドまで) |
 | cachy-UI一括管理 | Tailnet内で稼働中のcachy-UIを自動検出して一覧表示。ピン留めしたサーバーをページ上部に固定表示し、更新間隔 (5秒〜1分) やタブ非表示時の更新停止を設定可能。ホスト名クリックで新しいタブで開く |
 | システム操作 | cachy-UIの再起動・アップデート、PC本体の再起動・シャットダウン |
 

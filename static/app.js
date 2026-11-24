@@ -2862,6 +2862,39 @@ async function installOpenCodeDesktop() {
   );
 }
 
+// --- Webアプリ: OpenCode Desktop を開く / サービスを再起動 ---
+async function openOpenCodeDesktop() {
+  try {
+    const resp = await fetch('/api/opencode-desktop/url');
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    if (!data.success) throw new Error(data.message || 'URLを取得できませんでした');
+    window.open(data.url, '_blank');
+  } catch (e) {
+    showOpenCodeError(`URLの取得に失敗しました: ${e.message}`);
+  }
+}
+
+async function restartOpenCodeDesktop() {
+  const el = document.getElementById('opencode-desktop-info');
+  if (el) {
+    el.className = 'status-msg show info';
+    el.textContent = 'OpenCodeサービスを再起動しています...';
+  }
+  try {
+    const resp = await fetch('/api/opencode-desktop/restart', { method: 'POST' });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    if (!data.success) throw new Error(data.message || '再起動に失敗しました');
+    if (el) {
+      el.className = 'status-msg show success';
+      el.textContent = data.message || 'OpenCodeサービスを再起動しました。';
+    }
+  } catch (e) {
+    showOpenCodeError(`OpenCodeサービスの再起動に失敗しました: ${e.message}`);
+  }
+}
+
 // --- Webアプリ: OpenCode Desktop のペアリングリンク / パスワード表示 ---
 function showOpenCodeInfo(label, value, note) {
   const el = document.getElementById('opencode-desktop-info');
