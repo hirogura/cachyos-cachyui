@@ -38,7 +38,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="cachy-UI", version="3.4.1")
+app = FastAPI(title="cachy-UI", version="3.4.2")
 
 
 @app.middleware("http")
@@ -1915,6 +1915,55 @@ async def ventoyui_install():
         msg += f" 「起動」ボタンで開けます ({url})"
     detail = "\n".join(l for l in logs if l).strip()[-2000:]
     return {"success": True, "message": msg, "url": url, "output": detail}
+
+
+# ============================================================
+# 7.x Webアプリ: OpenCode Desktop のペアリングリンク / パスワード
+# ============================================================
+# どちらもユーザーの設定 (~/.config/opencode) を参照するため、プライマリ
+# ユーザーとして実行する。秘密情報なのでログには出さず、UI にだけ返す。
+OPENCODE_DESKTOP_SERVE_PORT = 3379
+
+
+@app.post("/api/opencode-desktop/pair")
+async def opencode_desktop_pair():
+    """Web UI サインイン用のペアリングリンクを発行する (1回限り・5分で失効)。"""
+    username, home, _shell = get_primary_user()
+    base = await _tailscale_https_url(OPENCODE_DESKTOP_SERVE_PORT)
+    if not base:
+        return {"success": False,
+                "message": "Tailscale のホスト名を取得できませんでした。Tailscale の接続を確認してください。"}
+    base = base.rstrip("/")
+    r = await run_cmd(
+        _as_user_cmd(username, f"opencode pair --url {shlex.quote(base)}"),
+        timeout=30, extra_env={"HOME": home},
+    )
+    combined = ((r["stdout"] or "") + "\n" + (r["stderr"] or "")).strip()
+    urls = re.findall(r"https?://[^\s'\"<>]+", combined)
+    if r["returncode"] == 0 and urls:
+        # トークン付きリンクはベース URL より長いため、最長のものを採用する。
+        link = max(urls, key=len).rstrip(".,;)")
+        return {"success": True, "link": link}
+    return {"success": False, "message": combined[-500:] or "ペアリングリンクを取得できませんでした"}
+
+
+@app.get("/api/opencode-desktop/password")
+async def opencode_desktop_password():
+    """service.json に保存された自動生成パスワードを返す。"""
+    username, home, _shell = get_primary_user()
+    path = os.path.join(home, ".config", "opencode", "service.json")
+    r = await run_cmd(_as_user_cmd(username, f"cat {shlex.quote(path)}"),
+                      timeout=10, extra_env={"HOME": home})
+    if r["returncode"] != 0:
+        return {"success": False,
+                "message": "service.json が見つかりません。OpenCode Desktop をインストールしてサービスを起動してください。"}
+    try:
+        password = json.loads(r["stdout"])["password"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return {"success": False, "message": "service.json からパスワードを取得できませんでした。"}
+    if not isinstance(password, str) or not password:
+        return {"success": False, "message": "パスワードが設定されていません。"}
+    return {"success": True, "password": password}
 
 
 # ============================================================

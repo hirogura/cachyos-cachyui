@@ -2862,6 +2862,69 @@ async function installOpenCodeDesktop() {
   );
 }
 
+// --- Webアプリ: OpenCode Desktop のペアリングリンク / パスワード表示 ---
+function showOpenCodeInfo(label, value, note) {
+  const el = document.getElementById('opencode-desktop-info');
+  if (!el) return;
+  el.className = 'status-msg show info';
+  el.innerHTML = `<strong>${escapeHtml(label)}</strong><br>`
+    + `<code style="user-select:all;">${escapeHtml(value)}</code>`
+    + (note ? `<br><span class="muted">${escapeHtml(note)}</span>` : '');
+}
+
+function hideOpenCodeInfo() {
+  const el = document.getElementById('opencode-desktop-info');
+  if (el) {
+    el.className = 'status-msg';
+    el.textContent = '';
+  }
+}
+
+function showOpenCodeError(msg) {
+  const el = document.getElementById('opencode-desktop-info');
+  if (el) {
+    el.className = 'status-msg show error';
+    el.textContent = msg;
+  }
+}
+
+async function showOpenCodePairLink() {
+  const el = document.getElementById('opencode-desktop-info');
+  if (el) {
+    el.className = 'status-msg show info';
+    el.textContent = 'ペアリングリンクを発行しています...';
+  }
+  try {
+    const resp = await fetch('/api/opencode-desktop/pair', { method: 'POST' });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    if (!data.success) throw new Error(data.message || 'ペアリングリンクを取得できませんでした');
+    // ワンタイムリンクなのでクリックで消費されないよう文字として表示する。
+    showOpenCodeInfo('Pairing link (1回限り・5分で失効)', data.link,
+                     'このリンクをブラウザで開くとサインインできます。');
+  } catch (e) {
+    showOpenCodeError(`ペアリングリンクの取得に失敗しました: ${e.message}`);
+  }
+}
+
+async function showOpenCodePassword() {
+  const el = document.getElementById('opencode-desktop-info');
+  if (el) {
+    el.className = 'status-msg show info';
+    el.textContent = 'パスワードを確認しています...';
+  }
+  try {
+    const resp = await fetch('/api/opencode-desktop/password');
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    if (!data.success) throw new Error(data.message || 'パスワードを取得できませんでした');
+    showOpenCodeInfo('Basic認証パスワード (ユーザー名: opencode)', data.password,
+                     '秘密情報です。画面から離れる際は「非表示」を押してください。');
+  } catch (e) {
+    showOpenCodeError(`パスワードの取得に失敗しました: ${e.message}`);
+  }
+}
+
 // --- 設定: ノートPCで画面を閉じてもスリープしない (systemd-logind) ---
 async function loadLidSwitch() {
   const badgeEl = document.getElementById('lid-switch-badge');

@@ -17,7 +17,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       </div>
       <div class="logo-info">
-        <span class="logo-text">cachy-UI<span class="logo-version">v.3.4.1</span></span>
+        <span class="logo-text">cachy-UI<span class="logo-version">v.3.4.2</span></span>
         <span class="logo-hostname" id="sidebar-hostname">...</span>
       </div>
     </div>
@@ -721,12 +721,16 @@
               <span class="badge badge-other">Tailscale Serve</span>
             </div>
             <div class="muted" style="font-size:0.78rem;">pacman でインストールし、Tailscale Serve の HTTPS 3379 番でテールネット内のみ公開します。LAN・HTTP には公開しません。接続 URL は <code>https://&lt;ホスト名&gt;.ts.net:3379/</code> です。</div>
-            <div class="muted" style="font-size:0.78rem;">Basic認証のユーザー名は <code>opencode</code> 固定です。パスワードは <code>~/.config/opencode/service.json</code> を参照してください。</div>
+            <div class="muted" style="font-size:0.78rem;">Basic認証のユーザー名は <code>opencode</code> 固定です。パスワードは「パスワードを確認」で表示できます (秘密情報なので共有しないでください)。</div>
           </div>
         </div>
-        <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:0.5rem;">
+        <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:0.5rem;flex-wrap:wrap;">
           <button class="btn btn-secondary" id="btn-opencode-desktop-install" onclick="installOpenCodeDesktop()">OpenCode Desktopをインストール</button>
+          <button class="btn btn-secondary" id="btn-opencode-desktop-pair" onclick="showOpenCodePairLink()">Pairing linkを表示</button>
+          <button class="btn btn-secondary" id="btn-opencode-desktop-password" onclick="showOpenCodePassword()">パスワードを確認</button>
+          <button class="btn btn-secondary" id="btn-opencode-desktop-hide" onclick="hideOpenCodeInfo()">非表示</button>
         </div>
+        <div id="opencode-desktop-info" class="status-msg" style="margin-top:0.5rem;margin-bottom:0;word-break:break-all;font-size:0.8rem;"></div>
       </div>
 
       <h2>設定</h2>
