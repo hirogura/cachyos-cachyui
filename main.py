@@ -38,7 +38,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="cachy-UI", version="3.4.3")
+app = FastAPI(title="cachy-UI", version="3.4.4")
 
 
 @app.middleware("http")
@@ -1980,12 +1980,25 @@ async def opencode_desktop_url():
 async def opencode_desktop_restart():
     """OpenCode のバックグラウンドサービスを再起動する。"""
     username, home, _shell = get_primary_user()
-    r = await run_cmd(_as_user_cmd(username, "opencode service restart"),
-                      timeout=60, extra_env={"HOME": home})
-    output = (r["stdout"] or r["stderr"] or "").strip()[-500:]
-    if r["returncode"] != 0:
-        return {"success": False, "message": output or "OpenCodeサービスの再起動に失敗しました。"}
-    return {"success": True, "message": "OpenCodeサービスを再起動しました。", "output": output}
+
+    async def _run(cmd: str) -> dict:
+        return await run_cmd(_as_user_cmd(username, cmd), timeout=60, extra_env={"HOME": home})
+
+    r = await _run("opencode service restart")
+    if r["returncode"] == 0:
+        output = (r["stdout"] or r["stderr"] or "").strip()[-500:]
+        return {"success": True, "message": "OpenCodeサービスを再起動しました。", "output": output}
+
+    # CLI のバージョンによっては restart が無く、ヘルプが出て失敗する。
+    # 停止済みでも start は動くよう stop の失敗は無視して start にフォールバックする。
+    r2 = await _run("/bin/bash -c 'opencode service stop >/dev/null 2>&1 || true; opencode service start'")
+    output = (r2["stdout"] or r2["stderr"] or "").strip()[-500:]
+    if r2["returncode"] != 0:
+        # 失敗時に CLI のヘルプ全文を流すと分かりにくいため要約だけを返す。
+        return {"success": False,
+                "message": "OpenCodeサービスの再起動に失敗しました。ターミナルで opencode service status を確認してください。",
+                "output": output}
+    return {"success": True, "message": "OpenCodeサービスを再起動しました (stop/start)。", "output": output}
 
 
 # ============================================================
