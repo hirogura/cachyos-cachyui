@@ -38,7 +38,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="cachy-UI", version="3.4.5")
+app = FastAPI(title="cachy-UI", version="3.4.6")
 
 
 @app.middleware("http")
@@ -1925,6 +1925,19 @@ async def ventoyui_install():
 OPENCODE_DESKTOP_SERVE_PORT = 3379
 
 
+def _opencode_user_cmd(username: str, args: str) -> str:
+    """Webターミナルと同じ環境で opencode を実行するコマンド文字列を返す。
+
+    sudo -u は環境変数をリセットするため、ターミナルが整えている
+    PATH ( ~/.opencode/bin 等 ) や XDG_RUNTIME_DIR / D-Bus などを
+    env コマンドで明示的に渡す。
+    """
+    user, home, shell = get_primary_user()
+    env = _build_term_env(user, home, shell)
+    env_args = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
+    return _as_user_cmd(username, f"/usr/bin/env {env_args} opencode {args}")
+
+
 @app.post("/api/opencode-desktop/pair")
 async def opencode_desktop_pair():
     """Web UI サインイン用のペアリングリンクを発行する (1回限り・5分で失効)。"""
@@ -1934,17 +1947,21 @@ async def opencode_desktop_pair():
         return {"success": False,
                 "message": "Tailscale のホスト名を取得できませんでした。Tailscale の接続を確認してください。"}
     base = base.rstrip("/")
-    r = await run_cmd(
-        _as_user_cmd(username, f"opencode pair --url {shlex.quote(base)}"),
-        timeout=30, extra_env={"HOME": home},
-    )
+    r = await run_cmd(_opencode_user_cmd(username, f"pair --url {shlex.quote(base)}"),
+                      timeout=30, extra_env={"HOME": home})
+    if r["returncode"] != 0:
+        # CLI のバージョンによっては --url ではなく位置引数を取るため再試行する。
+        r = await run_cmd(_opencode_user_cmd(username, f"pair {shlex.quote(base)}"),
+                          timeout=30, extra_env={"HOME": home})
     combined = ((r["stdout"] or "") + "\n" + (r["stderr"] or "")).strip()
     urls = re.findall(r"https?://[^\s'\"<>]+", combined)
     if r["returncode"] == 0 and urls:
         # トークン付きリンクはベース URL より長いため、最長のものを採用する。
         link = max(urls, key=len).rstrip(".,;)")
         return {"success": True, "link": link}
-    return {"success": False, "message": combined[-500:] or "ペアリングリンクを取得できませんでした"}
+    return {"success": False,
+            "message": "ペアリングリンクを取得できませんでした。ターミナルで opencode pair --url <URL> を実行してください。",
+            "output": combined[-500:]}
 
 
 @app.get("/api/opencode-desktop/password")
