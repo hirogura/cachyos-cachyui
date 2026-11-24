@@ -15,6 +15,7 @@ import pwd
 import re
 import select
 import shlex
+import shutil
 import signal
 import ssl
 import struct
@@ -38,7 +39,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="cachy-UI", version="3.4.4")
+app = FastAPI(title="cachy-UI", version="3.4.5")
 
 
 @app.middleware("http")
@@ -1925,6 +1926,31 @@ async def ventoyui_install():
 OPENCODE_DESKTOP_SERVE_PORT = 3379
 
 
+def _opencode_bin() -> str:
+    """service / pair に対応する opencode を解決して返す。
+
+    PATH の先頭に古い CLI (service / pair 無し) が残っている環境でも、
+    pacman 版 (/usr/bin/opencode) を優先して使う。無ければ PATH の opencode。
+    """
+    candidates = ["/usr/bin/opencode"]
+    found = shutil.which("opencode")
+    if found and found not in candidates:
+        candidates.append(found)
+    for candidate in candidates:
+        if not os.access(candidate, os.X_OK):
+            continue
+        try:
+            probe = subprocess.run(
+                [candidate, "service", "--help"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if probe.returncode == 0:
+            return shlex.quote(candidate)
+    return "opencode"
+
+
 @app.post("/api/opencode-desktop/pair")
 async def opencode_desktop_pair():
     """Web UI サインイン用のペアリングリンクを発行する (1回限り・5分で失効)。"""
@@ -1934,8 +1960,9 @@ async def opencode_desktop_pair():
         return {"success": False,
                 "message": "Tailscale のホスト名を取得できませんでした。Tailscale の接続を確認してください。"}
     base = base.rstrip("/")
+    opencode = _opencode_bin()
     r = await run_cmd(
-        _as_user_cmd(username, f"opencode pair --url {shlex.quote(base)}"),
+        _as_user_cmd(username, f"{opencode} pair --url {shlex.quote(base)}"),
         timeout=30, extra_env={"HOME": home},
     )
     combined = ((r["stdout"] or "") + "\n" + (r["stderr"] or "")).strip()
@@ -1980,7 +2007,8 @@ async def opencode_desktop_url():
 async def opencode_desktop_restart():
     """OpenCode のバックグラウンドサービスを再起動する。"""
     username, home, _shell = get_primary_user()
-    r = await run_cmd(_as_user_cmd(username, "opencode service restart"),
+    opencode = _opencode_bin()
+    r = await run_cmd(_as_user_cmd(username, f"{opencode} service restart"),
                       timeout=60, extra_env={"HOME": home})
     output = (r["stdout"] or r["stderr"] or "").strip()[-500:]
     if r["returncode"] != 0:

@@ -2845,13 +2845,16 @@ async function installOpenCodeDesktop() {
     + "'Icon=ai.opencode.desktop' 'StartupWMClass=ai.opencode.desktop' 'Categories=Development;' "
     + "'X-KDE-Autostart=true' 'X-GNOME-Autostart-enabled=true' "
     + '> "$HOME/.config/autostart/opencode-desktop.desktop"';
+  // PATH の先頭に古い CLI (service 無し) が残っていても動くように解決する。
+  const resolveOpencode = 'OC_BIN=$(if [ -x /usr/bin/opencode ] && /usr/bin/opencode service --help >/dev/null 2>&1; then printf %s /usr/bin/opencode; else printf %s opencode; fi)';
   const installCmd = [
     'sudo pacman -Syu --noconfirm',
     'sudo pacman -S --noconfirm --needed opencode opencode-desktop',
     'mkdir -p "$HOME/.config/autostart"',
     autostartCmd,
-    'opencode service start',
-    'opencode service status',
+    resolveOpencode,
+    '"$OC_BIN" service start',
+    '"$OC_BIN" service status',
     'sudo tailscale serve --bg --https=3379 49374',
     'sudo tailscale serve status',
   ].join(' && ') + '\n';
