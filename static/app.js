@@ -2830,6 +2830,8 @@ async function openVentoyUI() {
 // --- Webアプリ: OpenCode Desktop ---
 // pacman で導入し、Tailscale Serve の HTTPS:3379 でテールネット内のみ公開する。
 // 既存の Serve 設定を壊さないよう reset は使わず、Funnel / HTTP 公開 / バインド先変更も行わない。
+// serve 設定の変更は root または tailscale operator しかできないため sudo で実行する
+// (非 operator ユーザーだと "Access denied: serve config denied" になる)。
 async function installOpenCodeDesktop() {
   if (!confirm('OpenCode Desktopをインストールしますか？\n\n'
       + 'pacman で opencode / opencode-desktop を導入し、ログイン時の自動起動を設定します。\n'
@@ -2850,8 +2852,8 @@ async function installOpenCodeDesktop() {
     autostartCmd,
     'opencode service start',
     'opencode service status',
-    'tailscale serve --bg --https=3379 49374',
-    'tailscale serve status',
+    'sudo tailscale serve --bg --https=3379 49374',
+    'sudo tailscale serve status',
   ].join(' && ') + '\n';
 
   await sendToTerminal(
