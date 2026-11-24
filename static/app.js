@@ -2896,16 +2896,58 @@ async function restartOpenCodeDesktop() {
 }
 
 // --- Webアプリ: OpenCode Desktop のペアリングリンク / パスワード表示 ---
-function showOpenCodeInfo(label, value, note) {
+// 表示中の値のうち、「コピー」ボタンを出したものだけを保持する (秘密情報は残さない)。
+let opencodeInfoCopyValue = null;
+
+function showOpenCodeInfo(label, value, note, copyable = false) {
   const el = document.getElementById('opencode-desktop-info');
   if (!el) return;
+  opencodeInfoCopyValue = copyable ? value : null;
   el.className = 'status-msg show info';
+  // ワンタイムリンクはクリックで消費されないよう <a> にせず文字として表示する。
+  const valueHtml = copyable
+    ? '<div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">'
+      + `<code style="user-select:all;">${escapeHtml(value)}</code>`
+      + '<button type="button" class="btn btn-sm btn-secondary" id="btn-opencode-info-copy" '
+      + 'onclick="copyOpenCodeInfo()">コピー</button>'
+      + '</div>'
+    : `<code style="user-select:all;">${escapeHtml(value)}</code>`;
   el.innerHTML = `<strong>${escapeHtml(label)}</strong><br>`
-    + `<code style="user-select:all;">${escapeHtml(value)}</code>`
+    + valueHtml
     + (note ? `<br><span class="muted">${escapeHtml(note)}</span>` : '');
 }
 
+async function copyOpenCodeInfo() {
+  const value = opencodeInfoCopyValue;
+  if (!value) return;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(value);
+    } else {
+      // HTTP ページや古いブラウザ向けのフォールバック。
+      const ta = document.createElement('textarea');
+      ta.value = value;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      if (!ok) throw new Error('クリップボードへのコピーが拒否されました');
+    }
+    const btn = document.getElementById('btn-opencode-info-copy');
+    if (btn) {
+      btn.textContent = 'コピーしました';
+      setTimeout(() => { btn.textContent = 'コピー'; }, 1500);
+    }
+  } catch (e) {
+    const btn = document.getElementById('btn-opencode-info-copy');
+    if (btn) btn.textContent = `コピー失敗: ${e.message}`;
+  }
+}
+
 function hideOpenCodeInfo() {
+  opencodeInfoCopyValue = null;
   const el = document.getElementById('opencode-desktop-info');
   if (el) {
     el.className = 'status-msg';
@@ -2914,6 +2956,7 @@ function hideOpenCodeInfo() {
 }
 
 function showOpenCodeError(msg) {
+  opencodeInfoCopyValue = null;
   const el = document.getElementById('opencode-desktop-info');
   if (el) {
     el.className = 'status-msg show error';
@@ -2934,7 +2977,7 @@ async function showOpenCodePairLink() {
     if (!data.success) throw new Error(data.message || 'ペアリングリンクを取得できませんでした');
     // ワンタイムリンクなのでクリックで消費されないよう文字として表示する。
     showOpenCodeInfo('Pairing link (1回限り・5分で失効)', data.link,
-                     'このリンクをブラウザで開くとサインインできます。');
+                     'このリンクをブラウザで開くとサインインできます。', true);
   } catch (e) {
     showOpenCodeError(`ペアリングリンクの取得に失敗しました: ${e.message}`);
   }
