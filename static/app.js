@@ -2827,6 +2827,39 @@ async function openVentoyUI() {
   }
 }
 
+// --- Webアプリ: OpenCode Desktop ---
+// pacman で導入し、Tailscale Serve の HTTPS:3379 でテールネット内のみ公開する。
+// 既存の Serve 設定を壊さないよう reset は使わず、Funnel / HTTP 公開 / バインド先変更も行わない。
+async function installOpenCodeDesktop() {
+  if (!confirm('OpenCode Desktopをインストールしますか？\n\n'
+      + 'pacman で opencode / opencode-desktop を導入し、ログイン時の自動起動を設定します。\n'
+      + 'その後、Tailscale Serve で HTTPS の 3379 番をローカルの 49374 へプロキシします。\n'
+      + '公開先はテールネットのみで、LAN や HTTP には公開しません。既存の Serve 設定は変更しません。\n'
+      + '処理はターミナルで実行されます。')) return;
+
+  // ログイン時の自動起動 (KDE が読み込む XDG autostart)。
+  const autostartCmd = "printf '%s\\n' '[Desktop Entry]' 'Type=Application' 'Name=OpenCode' "
+    + "'Comment=Open source AI coding agent' 'Exec=opencode-desktop %U' 'Terminal=false' "
+    + "'Icon=ai.opencode.desktop' 'StartupWMClass=ai.opencode.desktop' 'Categories=Development;' "
+    + "'X-KDE-Autostart=true' 'X-GNOME-Autostart-enabled=true' "
+    + '> "$HOME/.config/autostart/opencode-desktop.desktop"';
+  const installCmd = [
+    'sudo pacman -Syu --noconfirm',
+    'sudo pacman -S --noconfirm --needed opencode opencode-desktop',
+    'mkdir -p "$HOME/.config/autostart"',
+    autostartCmd,
+    'opencode service start',
+    'opencode service status',
+    'tailscale serve --bg --https=3379 49374',
+    'tailscale serve status',
+  ].join(' && ') + '\n';
+
+  await sendToTerminal(
+    installCmd,
+    'OpenCode Desktop のインストールをターミナルで実行します。完了まで待ってください。'
+  );
+}
+
 // --- 設定: ノートPCで画面を閉じてもスリープしない (systemd-logind) ---
 async function loadLidSwitch() {
   const badgeEl = document.getElementById('lid-switch-badge');

@@ -17,7 +17,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       </div>
       <div class="logo-info">
-        <span class="logo-text">cachy-UI<span class="logo-version">v.3.3.3</span></span>
+        <span class="logo-text">cachy-UI<span class="logo-version">v.3.4.0</span></span>
         <span class="logo-hostname" id="sidebar-hostname">...</span>
       </div>
     </div>
@@ -710,6 +710,22 @@
         <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:0.5rem;">
           <button class="btn btn-secondary" id="btn-ventoy-ui-install" onclick="installVentoyUI()">インストール</button>
           <button class="btn btn-primary" id="btn-ventoy-ui-open" onclick="openVentoyUI()">起動</button>
+        </div>
+      </div>
+
+      <div class="stat-card" style="margin-bottom:1rem;">
+        <div style="display:flex;gap:0.6rem;align-items:flex-start;padding:0.45rem 0;">
+          <div style="flex:1;">
+            <div style="display:flex;align-items:center;gap:0.5rem;">
+              <span style="font-weight:600;">OpenCode Desktop</span>
+              <span class="badge badge-other">Tailscale Serve</span>
+            </div>
+            <div class="muted" style="font-size:0.78rem;">pacman でインストールし、Tailscale Serve の HTTPS 3379 番でテールネット内のみ公開します。LAN・HTTP には公開しません。接続 URL は <code>https://&lt;ホスト名&gt;.ts.net:3379/</code> です。</div>
+            <div class="muted" style="font-size:0.78rem;">Basic認証のユーザー名は <code>opencode</code> 固定です。パスワードは <code>~/.config/opencode/service.json</code> を参照してください。</div>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:0.5rem;">
+          <button class="btn btn-secondary" id="btn-opencode-desktop-install" onclick="installOpenCodeDesktop()">OpenCode Desktopをインストール</button>
         </div>
       </div>
 
