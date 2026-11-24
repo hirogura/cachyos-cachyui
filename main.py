@@ -38,7 +38,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="cachy-UI", version="3.4.6")
+app = FastAPI(title="cachy-UI", version="3.4.7")
 
 
 @app.middleware("http")
@@ -1925,43 +1925,32 @@ async def ventoyui_install():
 OPENCODE_DESKTOP_SERVE_PORT = 3379
 
 
-def _opencode_user_cmd(username: str, args: str) -> str:
-    """Webターミナルと同じ環境で opencode を実行するコマンド文字列を返す。
-
-    sudo -u は環境変数をリセットするため、ターミナルが整えている
-    PATH ( ~/.opencode/bin 等 ) や XDG_RUNTIME_DIR / D-Bus などを
-    env コマンドで明示的に渡す。
-    """
-    user, home, shell = get_primary_user()
-    env = _build_term_env(user, home, shell)
-    env_args = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
-    return _as_user_cmd(username, f"/usr/bin/env {env_args} opencode {args}")
+_PAIR_TOKEN_RE = re.compile(r"^[0-9]{10,}_[a-z0-9]{8}$")
 
 
-@app.post("/api/opencode-desktop/pair")
-async def opencode_desktop_pair():
-    """Web UI サインイン用のペアリングリンクを発行する (1回限り・5分で失効)。"""
-    username, home, _shell = get_primary_user()
-    base = await _tailscale_https_url(OPENCODE_DESKTOP_SERVE_PORT)
-    if not base:
-        return {"success": False,
-                "message": "Tailscale のホスト名を取得できませんでした。Tailscale の接続を確認してください。"}
-    base = base.rstrip("/")
-    r = await run_cmd(_opencode_user_cmd(username, f"pair --url {shlex.quote(base)}"),
-                      timeout=30, extra_env={"HOME": home})
-    if r["returncode"] != 0:
-        # CLI のバージョンによっては --url ではなく位置引数を取るため再試行する。
-        r = await run_cmd(_opencode_user_cmd(username, f"pair {shlex.quote(base)}"),
-                          timeout=30, extra_env={"HOME": home})
-    combined = ((r["stdout"] or "") + "\n" + (r["stderr"] or "")).strip()
-    urls = re.findall(r"https?://[^\s'\"<>]+", combined)
-    if r["returncode"] == 0 and urls:
+@app.get("/api/opencode-desktop/pair-result")
+async def opencode_desktop_pair_result(token: str = ""):
+    """Webターミナルで発行したペアリングリンクを一時ファイルから読み取る。"""
+    if not _PAIR_TOKEN_RE.fullmatch(token or ""):
+        raise HTTPException(status_code=400, detail="invalid token")
+    out = Path(f"/tmp/cachyui-pair-{token}.out")
+    done = Path(f"/tmp/cachyui-pair-{token}.done")
+    if not done.exists():
+        return {"ready": False}
+    text = out.read_text(encoding="utf-8", errors="replace") if out.exists() else ""
+    for p in (out, done):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    urls = re.findall(r"https?://[^\s'\"<>]+", text)
+    if urls:
         # トークン付きリンクはベース URL より長いため、最長のものを採用する。
         link = max(urls, key=len).rstrip(".,;)")
-        return {"success": True, "link": link}
-    return {"success": False,
-            "message": "ペアリングリンクを取得できませんでした。ターミナルで opencode pair --url <URL> を実行してください。",
-            "output": combined[-500:]}
+        return {"ready": True, "success": True, "link": link}
+    return {"ready": True, "success": False,
+            "message": "ペアリングリンクを取得できませんでした。ターミナル出力を確認してください。",
+            "output": text[-500:]}
 
 
 @app.get("/api/opencode-desktop/password")
