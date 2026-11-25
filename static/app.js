@@ -2865,6 +2865,36 @@ async function installOpenCodeDesktop() {
   );
 }
 
+// --- Webアプリ: ヘッドレスブラウザ (Playwright + Chromium) のインストール ---
+async function installOpenCodeHeadlessBrowser() {
+  if (!confirm('ヘッドレスブラウザをインストールしますか？\n\n'
+      + '/tmp/opencode/venv に Playwright と Chromium を導入し、user_agent / locale=ja-JP の設定スクリプトを配置します。\n'
+      + '処理はターミナルで実行されます。')) return;
+
+  // 設定スクリプトは /opt/cachy-ui が非公開のため、バックエンドに配置させる。
+  try {
+    const resp = await fetch('/api/opencode-desktop/headless-script', { method: 'POST' });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    if (!data.success) throw new Error(data.message || '設定スクリプトの配置に失敗しました');
+  } catch (e) {
+    showOpenCodeError(`設定スクリプトの配置に失敗しました: ${e.message}`);
+    return;
+  }
+
+  const installCmd = [
+    'mkdir -p /tmp/opencode',
+    'python3 -m venv /tmp/opencode/venv',
+    '/tmp/opencode/venv/bin/pip install --quiet playwright',
+    '/tmp/opencode/venv/bin/playwright install chromium',
+  ].join(' && ') + '\n';
+
+  await sendToTerminal(
+    installCmd,
+    'ヘッドレスブラウザのインストールをターミナルで実行します。完了まで待ってください。'
+  );
+}
+
 // --- Webアプリ: OpenCode Desktop を開く / サービスを再起動 ---
 async function openOpenCodeDesktop() {
   try {

@@ -39,7 +39,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="cachy-UI", version="3.4.5")
+app = FastAPI(title="cachy-UI", version="3.5.0")
 
 
 @app.middleware("http")
@@ -2014,6 +2014,31 @@ async def opencode_desktop_restart():
     if r["returncode"] != 0:
         return {"success": False, "message": output or "OpenCodeサービスの再起動に失敗しました。"}
     return {"success": True, "message": "OpenCodeサービスを再起動しました。", "output": output}
+
+
+@app.post("/api/opencode-desktop/headless-script")
+async def opencode_headless_script():
+    """ヘッドレスブラウザの設定スクリプトを /tmp/opencode へ配置する。
+
+    ターミナルはプライマリユーザーで動くため /opt/cachy-ui (700) を読めない。
+    バックエンド(root)がリポジトリのファイルを読み、実行ユーザーの所有物として置く。
+    """
+    username, _home, _shell = get_primary_user()
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "headless_browser.py")
+    dest_dir = "/tmp/opencode"
+    dest = os.path.join(dest_dir, "headless_browser.py")
+    try:
+        with open(src, "r", encoding="utf-8") as f:
+            content = f.read()
+        os.makedirs(dest_dir, exist_ok=True)
+        with open(dest, "w", encoding="utf-8") as f:
+            f.write(content)
+        pw = pwd.getpwnam(username)
+        os.chown(dest, pw.pw_uid, pw.pw_gid)
+        os.chmod(dest, 0o644)
+    except (OSError, KeyError) as e:
+        return {"success": False, "message": f"設定スクリプトを配置できませんでした: {e}"}
+    return {"success": True, "path": dest}
 
 
 # ============================================================
