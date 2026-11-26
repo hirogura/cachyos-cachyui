@@ -2135,6 +2135,9 @@ function renderRemoteDesktop(data) {
         </select>
         <button class="btn btn-primary" id="btn-rdp-connect" onclick="connectRemoteDesktop()">接続</button>
         <button class="btn btn-secondary" id="btn-rdp-disconnect" onclick="disconnectRemoteDesktop()" disabled>切断</button>
+        <button class="btn btn-secondary" onclick="sendRdpKeys([0x29])" title="半角/全角">半角/全角</button>
+        <button class="btn btn-secondary" onclick="sendRdpKeys([125])" title="変換">変換</button>
+        <button class="btn btn-secondary" onclick="sendRdpKeys([123])" title="無変換">無変換</button>
         <button class="btn btn-secondary" onclick="sendRdpKeys([29,56,83])" title="Ctrl+Alt+Del">Ctrl+Alt+Del</button>
         <button class="btn btn-secondary" onclick="sendRdpKeys([91])" title="Windowsキー">Win</button>
         <button class="btn btn-secondary" onclick="sendRdpKeys([56,15])" title="Alt+Tab">Alt+Tab</button>

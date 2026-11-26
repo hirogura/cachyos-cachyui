@@ -3,7 +3,7 @@
 Webベースの CachyOS 管理ツール。Tailscale内のHTTPS経由でアクセス可能。
 [serv-UI](https://github.com/hirogura/servui) (Ubuntu/GRUB/apt) を CachyOS (Limine/pacman) 用に移植したもの。
 
-現在のバージョン: **v3.6.2**
+現在のバージョン: **v3.6.3**
 
 ## serv-UI からの主な変更点
 
@@ -34,7 +34,7 @@ Webベースの CachyOS 管理ツール。Tailscale内のHTTPS経由でアクセ
 | ディスク | ディスク・パーティション情報の表示専用ページ。パーティションの作成・削除・マウント・LVM操作は「Disk Manager」で実施 |
 | Limine編集 | Limineエントリー一覧・削除、ISOブートエントリー追加 (cachy-isoboot 方式)、/iso 状態表示・create-isopart 誘導、CachyOS ISO (エディション選択)・汎用ISOダウンロード（/isoへwget保存、進捗表示・キャンセル対応）、default_entry・表示時間(timeout) 設定 |
 | selfEx / Disk Manager / selfcode / Easy LXD / VM Manager | 連携アプリの導入状態確認と起動。未インストールの場合は確認ダイアログ表示後にターミナルでインストール、インストール済みならサイトを新しいタブで開く |
-| リモートデスクトップ | [SelfRDP](https://github.com/hirogura/selfrdp.git) の IronRDP WASM クライアントを内蔵。この PC (127.0.0.1:3389) 専用で、ユーザー名・任意パスワード・解像度を指定して接続。表示は「縮小して全体表示」(既定) / 「ウィンドウに合わせる」 / 「原寸大」から選択。方式は自動判定、描画は軽量化固定。未導入時はターミナルでインストール |
+| リモートデスクトップ | [SelfRDP](https://github.com/hirogura/selfrdp.git) の IronRDP WASM クライアントを内蔵。この PC (127.0.0.1:3389) 専用で、ユーザー名・任意パスワード・解像度を指定して接続。表示は「縮小して全体表示」(既定) / 「ウィンドウに合わせる」 / 「原寸大」から選択。方式は自動判定、描画は軽量化固定。接続中は半角/全角・変換・無変換・Ctrl+Alt+Del・Win・Alt+Tab の特殊キーを送信可能。未導入時はターミナルでインストール |
 | バックアップ/復元 | /iso 内の Clonezilla Live ISO からカーネルを取り出して Limine 起動する無人パーティションバックアップ・復元 (cachyos-clonezilla-auto 方式)。SourceForge から Clonezilla Live ISO を選択・ダウンロードして /iso に保存可能 |
 | Snapper | snapper スナップショットの一覧・作成・復元 (rollback)・削除、複数一括削除、設定 (保持数など) とサブボリュームの管理 |
 | アプリ/設定 | よく使うアプリ (日本語入力・Chrome・Edge・Thunderbird・LibreOffice・VLC・SSH・リモートデスクトップ) のチェック式一括インストールとデスクトップショートカット作成 (cachyos-scripts の 3-soft.sh / 4-desktopicon.sh と同じ内容)。Ventoy-UI の導入、OpenCode Desktop の導入 (pacman + Tailscale Serve の HTTPS:3379 でテールネット内のみ公開) とペアリングリンク・パスワード表示、URLを開く・サービス再起動、ノートPCの蓋閉じスリープ抑止、pacman ロックファイル削除、旧 simdjson への切り戻し (更新直前のバージョンを自動選択、nodejs 再ビルドまで) |
