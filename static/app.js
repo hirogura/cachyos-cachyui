@@ -2070,7 +2070,13 @@ async function loadRdpModule() {
   if (!rdpModule) {
     rdpModule = await import('/api/remotedesktop/assets/pkg/ironrdp_web.js');
   }
-  await rdpModule.init();
+  // wasm-bindgen の初期化関数は default export (SelfRDP の `import init, {...}` と同じ)。
+  // 動的 import では名前空間の .default から取得する必要がある。
+  const init = rdpModule.default;
+  if (typeof init !== 'function') {
+    throw new Error('IronRDP の初期化関数を読み込めませんでした');
+  }
+  await init();
   rdpModule.setup('info');
   return rdpModule;
 }
