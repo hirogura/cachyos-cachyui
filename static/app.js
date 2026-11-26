@@ -22,6 +22,7 @@ const RDP_USER_KEY = 'cachyui_rdp_username';
 const RDP_PASSWORD_KEY = 'cachyui_rdp_password';
 const RDP_SAVE_PASSWORD_KEY = 'cachyui_rdp_save_password';
 const RDP_VIEWMODE_KEY = 'cachyui_rdp_viewmode';
+const RDP_RESOLUTION_KEY = 'cachyui_rdp_resolution';
 
 const TERM_SESSION_KEY = 'cachyui_terminal_session';
 const TERM_SESSION_RE = /^[A-Za-z0-9_-]{8,64}$/;
@@ -1973,6 +1974,20 @@ function showRemoteDesktopStatus(msg, type) {
   el.textContent = msg || '';
 }
 
+// 解像度もブラウザ内に保持する (git / サーバーには保存しない)。
+function getRdpResolution() {
+  let value = '1280x800';
+  try { value = localStorage.getItem(RDP_RESOLUTION_KEY) || value; } catch (e) {}
+  const allowed = ['1024x768', '1280x800', '1600x900', '1920x1080', '2560x1440', '3440x1440', '3840x2160'];
+  return allowed.includes(value) ? value : '1280x800';
+}
+
+function saveRdpResolution() {
+  const el = document.getElementById('rdp-resolution');
+  if (!el) return;
+  try { localStorage.setItem(RDP_RESOLUTION_KEY, el.value); } catch (e) {}
+}
+
 // 表示サイズは SelfRDP と同じ3種類。既定は「縮小して全体表示」(比率維持・拡大なし)。
 function getRdpViewMode() {
   let mode = 'fit';
@@ -2076,7 +2091,8 @@ function renderRemoteDesktop(data) {
   } catch (e) {}
   const user = savedUser || data.user || '';
   const resolutions = ['1024x768', '1280x800', '1600x900', '1920x1080', '2560x1440', '3440x1440', '3840x2160'];
-  const options = resolutions.map(r => `<option value="${r}"${r === '1280x800' ? ' selected' : ''}>${r.replace('x', ' × ')}</option>`).join('');
+  const resolution = getRdpResolution();
+  const options = resolutions.map(r => `<option value="${r}"${r === resolution ? ' selected' : ''}>${r.replace('x', ' × ')}</option>`).join('');
   const viewMode = getRdpViewMode();
 
   container.innerHTML = `
@@ -2103,7 +2119,7 @@ function renderRemoteDesktop(data) {
         </div>
         <div class="form-group" style="margin-bottom:0;">
           <label for="rdp-resolution">解像度</label>
-          <select id="rdp-resolution">${options}</select>
+          <select id="rdp-resolution" onchange="saveRdpResolution()">${options}</select>
         </div>
         <div class="form-group" style="margin-bottom:0;display:flex;align-items:center;">
           <label for="rdp-save-password" style="display:flex;align-items:center;gap:0.4rem;margin:0;cursor:pointer;">

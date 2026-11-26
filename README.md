@@ -3,7 +3,7 @@
 Webベースの CachyOS 管理ツール。Tailscale内のHTTPS経由でアクセス可能。
 [serv-UI](https://github.com/hirogura/servui) (Ubuntu/GRUB/apt) を CachyOS (Limine/pacman) 用に移植したもの。
 
-現在のバージョン: **v3.6.1**
+現在のバージョン: **v3.6.2**
 
 ## serv-UI からの主な変更点
 
@@ -85,7 +85,7 @@ Webベースの CachyOS 管理ツール。Tailscale内のHTTPS経由でアクセ
 ### リモートデスクトップ (SelfRDP 内蔵) について
 
 - [SelfRDP](https://github.com/hirogura/selfrdp.git) の IronRDP (Rust → WebAssembly) クライアントと Devolutions Gateway を `/opt/selfrdp` に導入します。インストールは `[install-selfrdp-cachy.sh](install-selfrdp-cachy.sh)` が行い、未導入時に画面の「インストール」ボタンからターミナルで実行されます。
-- 接続先は **この PC の 127.0.0.1:3389 固定**です。ホスト名や接続方式は UI に出しません (方式は自動判定、描画は軽量化固定)。表示サイズは「縮小して全体表示」(既定・比率維持で拡大なし) / 「ウィンドウに合わせる」 / 「原寸大」から選べます。
+- 接続先は **この PC の 127.0.0.1:3389 固定**です。ホスト名や接続方式は UI に出しません (方式は自動判定、描画は軽量化固定)。表示サイズは「縮小して全体表示」(既定・比率維持で拡大なし) / 「ウィンドウに合わせる」 / 「原寸大」から選べます。解像度・表示サイズの選択はブラウザ内に保持されます。
 - ユーザー名とパスワードはこの PC のログイン情報 (KRDP の認証) です。パスワード欄は任意ですが、KRDP が認証を要求する環境では正しいパスワードが必要です。誤ると `disconnect provider ultimatum` (認証失敗) で切断されます。
 - 「パスワードを保存」をチェックすると、**認証成功後だけ**ブラウザの localStorage に保持します。git リポジトリやサーバー上のファイルには保存しないため `git push` 対象外です (チェックを外して接続すると保存分は削除されます)。
 - **Tailscale Serve の公開ポートは増やしません**。WASM アセットは cachy-UI の `/api/remotedesktop/assets/` から、Gateway への RDCleanPath WebSocket は `/ws/remotedesktop/jet` から中継するため、ブラウザは cachy-UI と同じ 3355 番だけを見ます。SelfRDP 単体の既定ポート 3375 とも衝突しません。
