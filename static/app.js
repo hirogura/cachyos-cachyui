@@ -9,6 +9,10 @@ let wifiStatusData = null;
 let selectedWifiNetwork = null;
 let pendingTerminalCwd = null;
 let terminalExitNotified = false;
+// --- リモートデスクトップ (SelfRDP 内蔵) ---
+let rdpModule = null;
+let rdpSession = null;
+let rdpInputAbort = null;
 
 const TERM_SESSION_KEY = 'cachyui_terminal_session';
 const TERM_SESSION_RE = /^[A-Za-z0-9_-]{8,64}$/;
@@ -53,6 +57,8 @@ function switchTab(tab) {
     loadSnapperPage();
   } else if (tab === 'apps') {
     loadAppsPage();
+  } else if (tab === 'remotedesktop') {
+    loadRemoteDesktopPage();
   } else if (tab === 'fleet') {
     loadFleetPage();
   }
@@ -1945,6 +1951,292 @@ async function openVMManager() {
   } catch (e) {
     showStatus(`VM Manager確認エラー: ${e.message}`, 'error');
   }
+}
+
+// --- リモートデスクトップ (SelfRDP 内蔵 / この PC 専用) ---
+// SelfRDP の IronRDP WASM クライアントを cachy-UI の右ペインで動かす。
+// 接続先は 127.0.0.1:3389 固定、方式は自動判定、描画は軽量化固定。
+// アセット配信と Gateway 中継は cachy-UI (3355) が担うため公開ポートは増やさない。
+function showRemoteDesktopStatus(msg, type) {
+  const el = document.getElementById('remotedesktop-status');
+  if (!el) return;
+  el.className = type ? `status-msg show ${type}` : 'status-msg';
+  el.textContent = msg || '';
+}
+
+async function loadRemoteDesktopPage() {
+  const container = document.getElementById('remotedesktop-container');
+  if (!container) return;
+  // 接続中に再描画すると canvas が作り直されてセッションが壊れるため、そのままにする。
+  if (rdpSession) {
+    showRemoteDesktopStatus('接続中です', 'success');
+    return;
+  }
+  container.innerHTML = '<p class="muted">読み込み中<span class="spinner"></span></p>';
+  showRemoteDesktopStatus('', '');
+  try {
+    const resp = await fetch('/api/remotedesktop/status');
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    renderRemoteDesktop(data);
+  } catch (e) {
+    container.innerHTML = `<p class="muted">状態取得に失敗しました: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function renderRemoteDesktop(data) {
+  const container = document.getElementById('remotedesktop-container');
+  if (!container) return;
+
+  if (!data.installed) {
+    container.innerHTML = `
+      <div class="stat-card" style="margin-bottom:1rem;">
+        <div style="display:flex;align-items:center;gap:0.5rem;">
+          <span style="font-weight:600;">SelfRDP は未インストールです</span>
+          <span class="badge badge-warn">未導入</span>
+        </div>
+        <div class="muted" style="font-size:0.78rem;margin-top:0.4rem;">
+          SelfRDP (IronRDP WASM クライアント + Devolutions Gateway) をこの PC に導入します。
+          接続先はこの PC (127.0.0.1:3389) に固定され、Tailscale の公開ポートは作りません。
+          cachy-UI の 3355 番経由だけで利用します。処理はターミナルで実行されます。
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:0.5rem;">
+          <button class="btn btn-primary" onclick="installRemoteDesktop()">インストール</button>
+        </div>
+      </div>
+      <p class="muted">接続には RDP サーバー (krdp など) がこの PC で待受している必要があります。
+      「アプリ/設定」のリモートデスクトップ (krdp) を先に導入してください。</p>`;
+    return;
+  }
+
+  let savedUser = '';
+  try { savedUser = localStorage.getItem('cachyui_rdp_username') || ''; } catch (e) {}
+  const user = savedUser || data.user || '';
+  const resolutions = ['1024x768', '1280x800', '1600x900', '1920x1080', '2560x1440', '3440x1440', '3840x2160'];
+  const options = resolutions.map(r => `<option value="${r}"${r === '1280x800' ? ' selected' : ''}>${r.replace('x', ' × ')}</option>`).join('');
+
+  container.innerHTML = `
+    <div class="stat-card" style="margin-bottom:1rem;">
+      <div style="display:flex;align-items:center;gap:0.5rem;">
+        <span style="font-weight:600;">接続先: この PC</span>
+        <span class="badge ${data.active ? 'badge-active' : 'badge-inactive'}">${data.active ? 'サービス稼働中' : 'サービス未稼働'}</span>
+      </div>
+      <div class="muted" style="font-size:0.78rem;margin-top:0.4rem;">
+        127.0.0.1:3389 に固定しています。接続方式は自動判定、描画は軽量化固定です。
+        新しい公開ポートは作らず、cachy-UI と同じ 3355 番経由で接続します。
+      </div>
+    </div>
+    <div class="stat-card" style="margin-bottom:1rem;">
+      <div class="rdp-form-grid">
+        <div class="form-group" style="margin-bottom:0;">
+          <label for="rdp-username">ユーザー名</label>
+          <input type="text" id="rdp-username" autocomplete="username" value="${escapeAttr(user)}">
+        </div>
+        <div class="form-group" style="margin-bottom:0;">
+          <label for="rdp-password">パスワード (任意)</label>
+          <input type="password" id="rdp-password" autocomplete="current-password" placeholder="不要なら空欄">
+        </div>
+        <div class="form-group" style="margin-bottom:0;">
+          <label for="rdp-resolution">解像度</label>
+          <select id="rdp-resolution">${options}</select>
+        </div>
+      </div>
+      <div class="rdp-toolbar" style="margin-top:0.9rem;">
+        <button class="btn btn-primary" id="btn-rdp-connect" onclick="connectRemoteDesktop()">接続</button>
+        <button class="btn btn-secondary" id="btn-rdp-disconnect" onclick="disconnectRemoteDesktop()" disabled>切断</button>
+        <button class="btn btn-secondary" onclick="sendRdpKeys([29,56,83])" title="Ctrl+Alt+Del">Ctrl+Alt+Del</button>
+        <button class="btn btn-secondary" onclick="sendRdpKeys([91])" title="Windowsキー">Win</button>
+        <button class="btn btn-secondary" onclick="sendRdpKeys([56,15])" title="Alt+Tab">Alt+Tab</button>
+        <button class="btn btn-secondary" onclick="toggleRdpFullscreen()">全画面</button>
+      </div>
+    </div>
+    <div id="rdp-session" class="rdp-session" style="display:none;"><canvas id="rdp-canvas" tabindex="0"></canvas></div>`;
+}
+
+function installRemoteDesktop() {
+  if (!confirm('SelfRDP をこの PC にインストールしますか？\n\n'
+      + '・Devolutions Gateway と IronRDP WASM クライアントを /opt/selfrdp に導入します\n'
+      + '・接続先はこの PC (127.0.0.1:3389) 固定です\n'
+      + '・Tailscale Serve の公開ポートは作らず、cachy-UI (3355) 経由だけで利用します\n'
+      + '・処理はターミナルで実行されます。完了後に「更新」を押してください。')) return;
+  sendToTerminal(
+    'sudo bash /opt/cachy-ui/install-selfrdp-cachy.sh',
+    'SelfRDP のインストールをターミナルで実行します。完了後に「更新」を押してください。'
+  );
+}
+
+// IronRDP の WASM は cachy-UI と同一オリジンで配信する (公開ポート追加なし)。
+async function loadRdpModule() {
+  if (!rdpModule) {
+    rdpModule = await import('/api/remotedesktop/assets/pkg/ironrdp_web.js');
+  }
+  await rdpModule.init();
+  rdpModule.setup('info');
+  return rdpModule;
+}
+
+async function connectRemoteDesktop() {
+  const connectBtn = document.getElementById('btn-rdp-connect');
+  const username = (document.getElementById('rdp-username')?.value || '').trim();
+  const password = document.getElementById('rdp-password')?.value || '';
+  const res = (document.getElementById('rdp-resolution')?.value || '1280x800').split('x');
+  const width = Number(res[0]) || 1280;
+  const height = Number(res[1]) || 800;
+  if (!username) {
+    showRemoteDesktopStatus('ユーザー名を入力してください', 'error');
+    return;
+  }
+  try { localStorage.setItem('cachyui_rdp_username', username); } catch (e) {}
+  if (connectBtn) connectBtn.disabled = true;
+
+  try {
+    showRemoteDesktopStatus('IronRDP を初期化中...', 'info');
+    const mod = await loadRdpModule();
+
+    // 方式は自動判定に固定 (UI では選択させない)。
+    let credssp = true;
+    try {
+      const pr = await fetch('/api/remotedesktop/probe');
+      const pj = await pr.json();
+      if (pj.ok) credssp = !!pj.credssp;
+    } catch (e) { /* 判定できない場合は既定値を使う */ }
+
+    showRemoteDesktopStatus('接続トークンを取得中...', 'info');
+    const tr = await fetch('/api/remotedesktop/token');
+    const tj = await tr.json().catch(() => ({}));
+    if (!tr.ok || !tj.ok) {
+      throw new Error(tj.detail || tj.message || 'トークン取得に失敗しました');
+    }
+
+    showRemoteDesktopStatus('接続中...', 'info');
+    const canvas = document.getElementById('rdp-canvas');
+    const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+    const builder = new mod.SessionBuilder()
+      .destination('127.0.0.1')
+      .proxyAddress(`${protocol}://${location.host}/ws/remotedesktop/jet`)
+      .authToken(tj.token)
+      .username(username)
+      .password(password)
+      .desktopSize(new mod.DesktopSize(width, height))
+      .renderCanvas(canvas)
+      .setCursorStyleCallbackContext(canvas)
+      .setCursorStyleCallback(() => {})
+      .extension(new mod.Extension('enable_credssp', credssp))
+      // 描画軽量化 (壁紙・フォントスムージング・メニューアニメ等を無効化)
+      .extension(new mod.Extension('performance_flags', 0x87));
+
+    rdpSession = await builder.connect();
+    const sessionEl = document.getElementById('rdp-session');
+    if (sessionEl) sessionEl.style.display = 'block';
+    bindRemoteDesktopInput(canvas, rdpSession);
+    const disconnectBtn = document.getElementById('btn-rdp-disconnect');
+    if (disconnectBtn) disconnectBtn.disabled = false;
+    showRemoteDesktopStatus('接続しました', 'success');
+
+    const info = await rdpSession.run();
+    showRemoteDesktopStatus('セッション終了: ' + (info && info.reason ? info.reason() : '切断'), 'info');
+    disconnectRemoteDesktop(false);
+  } catch (err) {
+    const detail = err && err.backtrace ? err.backtrace() : String(err);
+    showRemoteDesktopStatus('接続に失敗しました: ' + detail, 'error');
+    disconnectRemoteDesktop(false);
+  } finally {
+    if (connectBtn) connectBtn.disabled = false;
+  }
+}
+
+function disconnectRemoteDesktop(ask = true) {
+  if (ask && rdpSession && !confirm('接続を切断しますか？')) return;
+  if (rdpInputAbort) {
+    rdpInputAbort.abort();
+    rdpInputAbort = null;
+  }
+  if (rdpSession) {
+    try { rdpSession.shutdown(); } catch (e) {}
+    rdpSession = null;
+  }
+  const sessionEl = document.getElementById('rdp-session');
+  if (sessionEl) sessionEl.style.display = 'none';
+  const disconnectBtn = document.getElementById('btn-rdp-disconnect');
+  if (disconnectBtn) disconnectBtn.disabled = true;
+  if (ask) showRemoteDesktopStatus('切断しました', 'info');
+}
+
+function toggleRdpFullscreen() {
+  const el = document.getElementById('rdp-session');
+  if (!el || el.style.display === 'none') return;
+  if (document.fullscreenElement) document.exitFullscreen();
+  else if (el.requestFullscreen) el.requestFullscreen();
+}
+
+// SelfRDP と同じ PS/2 スキャンコード表。日本語キーボードの特殊キーも送れるようにする。
+const RDP_SCANCODES = {
+  KeyA:30,KeyB:48,KeyC:46,KeyD:32,KeyE:18,KeyF:33,KeyG:34,KeyH:35,KeyI:23,KeyJ:36,KeyK:37,KeyL:38,
+  KeyM:50,KeyN:49,KeyO:24,KeyP:25,KeyQ:16,KeyR:19,KeyS:31,KeyT:20,KeyU:22,KeyV:47,KeyW:17,KeyX:45,KeyY:21,KeyZ:44,
+  Digit0:11,Digit1:2,Digit2:3,Digit3:4,Digit4:5,Digit5:6,Digit6:7,Digit7:8,Digit8:9,Digit9:10,
+  Enter:28,Escape:1,Backspace:14,Tab:15,Space:57,ShiftLeft:42,ShiftRight:54,ControlLeft:29,ControlRight:97,
+  AltLeft:56,AltRight:100,MetaLeft:91,ArrowUp:72,ArrowDown:80,ArrowLeft:75,ArrowRight:77,
+  F1:59,F2:60,F3:61,F4:62,F5:63,F6:64,F7:65,F8:66,F9:67,F10:68,F11:87,F12:88,
+  Minus:12,Equal:13,BracketLeft:26,BracketRight:27,Backslash:43,Semicolon:39,Quote:40,
+  Comma:51,Period:52,Slash:53,Backquote:41,CapsLock:58,Delete:83,Home:71,End:79,PageUp:73,PageDown:81,
+  IntlYen:124,KanaMode:112,Hiragana:113,NonConvert:123,Convert:125,
+};
+
+function rdpSendTransaction(events) {
+  if (!rdpSession || !rdpModule || !events.length) return;
+  const transaction = new rdpModule.InputTransaction();
+  events.forEach(e => transaction.addEvent(e));
+  try { rdpSession.applyInputs(transaction); } catch (e) {}
+}
+
+function sendRdpKeys(codes) {
+  if (!rdpSession || !rdpModule) {
+    showRemoteDesktopStatus('接続中ではありません', 'error');
+    return;
+  }
+  rdpSendTransaction(codes.map(c => rdpModule.DeviceEvent.keyPressed(c)));
+  setTimeout(() => {
+    rdpSendTransaction(codes.slice().reverse().map(c => rdpModule.DeviceEvent.keyReleased(c)));
+  }, 90);
+  const canvas = document.getElementById('rdp-canvas');
+  if (canvas) canvas.focus();
+}
+
+function bindRemoteDesktopInput(canvas, session) {
+  if (rdpInputAbort) rdpInputAbort.abort();
+  const ac = new AbortController();
+  rdpInputAbort = ac;
+  const opt = { signal: ac.signal };
+
+  canvas.addEventListener('mousemove', e => {
+    const r = canvas.getBoundingClientRect();
+    const cw = canvas.width || 1280, ch = canvas.height || 800;
+    const s = Math.min(r.width / cw, r.height / ch);
+    const x = (e.clientX - r.left - (r.width - cw * s) / 2) / s;
+    const y = (e.clientY - r.top - (r.height - ch * s) / 2) / s;
+    rdpSendTransaction([rdpModule.DeviceEvent.mouseMove(x, y)]);
+  }, opt);
+  canvas.addEventListener('mousedown', e => rdpSendTransaction([rdpModule.DeviceEvent.mouseButtonPressed(e.button)]), opt);
+  canvas.addEventListener('mouseup', e => rdpSendTransaction([rdpModule.DeviceEvent.mouseButtonReleased(e.button)]), opt);
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    rdpSendTransaction([rdpModule.DeviceEvent.wheelRotations(true, e.deltaY > 0 ? -1 : 1, 0)]);
+  }, { passive: false, signal: ac.signal });
+  canvas.addEventListener('keydown', e => {
+    const sc = RDP_SCANCODES[e.code];
+    if (sc !== undefined) {
+      e.preventDefault();
+      rdpSendTransaction([rdpModule.DeviceEvent.keyPressed(sc)]);
+    }
+  }, opt);
+  canvas.addEventListener('keyup', e => {
+    const sc = RDP_SCANCODES[e.code];
+    if (sc !== undefined) {
+      e.preventDefault();
+      rdpSendTransaction([rdpModule.DeviceEvent.keyReleased(sc)]);
+    }
+  }, opt);
+  canvas.focus();
 }
 
 // --- Disk Manager ---

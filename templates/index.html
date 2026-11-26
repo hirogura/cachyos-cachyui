@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>cachy-UI</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css?v=10">
+  <link rel="stylesheet" href="/static/style.css?v=11">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
@@ -17,7 +17,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       </div>
       <div class="logo-info">
-        <span class="logo-text">cachy-UI<span class="logo-version">v.3.5.0</span></span>
+        <span class="logo-text">cachy-UI<span class="logo-version">v.3.6.0</span></span>
         <span class="logo-hostname" id="sidebar-hostname">...</span>
       </div>
     </div>
@@ -73,6 +73,10 @@
       <li data-tab="vmmanager" onclick="openVMManager()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="2"/><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="10" x2="16" y2="10"/><line x1="8" y1="14" x2="12" y2="14"/></svg>
         <span>VM Manager</span>
+      </li>
+      <li data-tab="remotedesktop">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+        <span>リモートデスクトップ</span>
       </li>
       <li data-tab="backup">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M23 3H1v5h22z"/><path d="M10 12h4"/></svg>
@@ -266,6 +270,23 @@
         </div>
       </div>
       <div id="terminal-container"></div>
+    </section>
+
+    <!-- リモートデスクトップ (この PC 専用 / SelfRDP 内蔵) -->
+    <section id="tab-remotedesktop" class="tab-content">
+      <div class="terminal-header">
+        <h1>リモートデスクトップ<span class="muted" style="font-size:0.8rem;margin-left:0.75rem;font-weight:400;">接続先: このPC (127.0.0.1:3389)</span></h1>
+        <div class="btn-group">
+          <button class="btn btn-secondary" onclick="loadRemoteDesktopPage()" title="インストール状態を再確認します">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+            更新
+          </button>
+        </div>
+      </div>
+      <div id="remotedesktop-status" class="status-msg"></div>
+      <div id="remotedesktop-container">
+        <p class="muted">読み込み中<span class="spinner"></span></p>
+      </div>
     </section>
 
     <!-- Wi-Fi -->
@@ -832,6 +853,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=42"></script>
+  <script src="/static/app.js?v=43"></script>
 </body>
 </html>

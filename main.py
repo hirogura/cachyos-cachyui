@@ -9,6 +9,7 @@ import fcntl
 import glob
 import json
 import logging
+import mimetypes
 import os
 import pty
 import pwd
@@ -32,14 +33,15 @@ from functools import cmp_to_key
 from pathlib import Path
 
 import psutil
+import websockets
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="cachy-UI", version="3.5.0")
+app = FastAPI(title="cachy-UI", version="3.6.0")
 
 
 @app.middleware("http")
@@ -1827,6 +1829,147 @@ async def diskmanager_status():
             pass
 
     return {"installed": installed, "url": url}
+
+
+# ============================================================
+# 7.x リモートデスクトップ: selfRDP を cachy-UI に内蔵
+# ============================================================
+# SelfRDP (https://github.com/hirogura/selfrdp.git) の IronRDP WASM クライアントと
+# Devolutions Gateway をこの PC 専用 (接続先 127.0.0.1:3389) で動かす。
+# ブラウザからは cachy-UI の 3355 番だけを見せ、WASM ファイルの配信と
+# Gateway への WebSocket 中継を cachy-UI が行うため、公開ポートは増やさない。
+# SelfRDP 本体は 7171 (Gateway) / 7172 (制御 API) のループバックのみで動作する。
+SELFRDP_DIR = Path("/opt/selfrdp")
+SELFRDP_ASSETS = SELFRDP_DIR / "iron-assets"
+SELFRDP_CONTROL_URL = "http://127.0.0.1:7172"
+SELFRDP_GATEWAY_WS = "ws://127.0.0.1:7171/jet/rdp"
+SELFRDP_TARGET = "127.0.0.1"  # この PC 専用。UI からは変更できない。
+SELFRDP_SERVICES = ("selfrdp-gateway.service", "selfrdp.service")
+
+
+def _selfrdp_installed() -> bool:
+    """SelfRDP のクライアント資産が配置されているか。"""
+    return (SELFRDP_ASSETS / "pkg/ironrdp_web.js").is_file()
+
+
+def _selfrdp_control_get(path: str) -> dict:
+    """SelfRDP の制御 API (127.0.0.1:7172) へ GET して JSON を返す。"""
+    with urllib.request.urlopen(SELFRDP_CONTROL_URL + path, timeout=10) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+@app.get("/api/remotedesktop/status")
+async def remotedesktop_status():
+    """インストール状態と、この PC のデスクトップユーザー名を返す。"""
+    installed = _selfrdp_installed()
+    active = False
+    if installed:
+        states = await asyncio.gather(*[
+            run_cmd(f"systemctl is-active {name} 2>/dev/null", timeout=5)
+            for name in SELFRDP_SERVICES
+        ])
+        active = all(r["returncode"] == 0 for r in states)
+    username, _home, _shell = get_primary_user()
+    return {
+        "installed": installed,
+        "active": active,
+        "user": username,
+        "target": SELFRDP_TARGET,
+    }
+
+
+@app.get("/api/remotedesktop/assets/{asset_path:path}")
+async def remotedesktop_asset(asset_path: str):
+    """IronRDP の WASM / JS を cachy-UI と同一オリジンで配信する。"""
+    if not _selfrdp_installed():
+        raise HTTPException(status_code=404, detail="selfRDP is not installed")
+    base = SELFRDP_ASSETS.resolve()
+    target = (base / asset_path).resolve()
+    if target != base and base not in target.parents:
+        raise HTTPException(status_code=404, detail="invalid asset path")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="asset not found")
+    suffix = target.suffix.lower()
+    media_type = {
+        ".js": "text/javascript",
+        ".wasm": "application/wasm",
+    }.get(suffix) or mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+    return FileResponse(
+        target,
+        media_type=media_type,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
+
+
+@app.get("/api/remotedesktop/token")
+async def remotedesktop_token():
+    """この PC 宛の RDP 用 ASSOCIATION トークンを SelfRDP から取得する。"""
+    try:
+        data = await asyncio.to_thread(
+            _selfrdp_control_get,
+            "/api/rdp-token?host=" + urllib.parse.quote(SELFRDP_TARGET),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"SelfRDP制御APIに接続できません: {exc}")
+    if not data.get("ok"):
+        raise HTTPException(status_code=502, detail=data.get("message", "トークン取得に失敗しました"))
+    return {"ok": True, "token": data["token"]}
+
+
+@app.get("/api/remotedesktop/probe")
+async def remotedesktop_probe():
+    """この PC の RDP 方式を固定判定する (UI では方式を選ばせない)。"""
+    try:
+        data = await asyncio.to_thread(
+            _selfrdp_control_get,
+            "/api/probe?host=" + urllib.parse.quote(SELFRDP_TARGET),
+        )
+        return {"ok": bool(data.get("ok")), "credssp": bool(data.get("credssp", True))}
+    except Exception:
+        return {"ok": False, "credssp": True}
+
+
+@app.websocket("/ws/remotedesktop/jet")
+async def remotedesktop_jet(websocket: WebSocket):
+    """IronRDP の RDCleanPath WebSocket をローカルの Gateway へ双方向中継する。"""
+    await websocket.accept()
+    try:
+        async with websockets.connect(SELFRDP_GATEWAY_WS, max_size=None, open_timeout=10) as gateway:
+            async def browser_to_gateway():
+                while True:
+                    message = await websocket.receive()
+                    if message["type"] == "websocket.disconnect":
+                        break
+                    data = message.get("bytes")
+                    if data is not None:
+                        await gateway.send(data)
+                    elif message.get("text") is not None:
+                        await gateway.send(message["text"])
+
+            async def gateway_to_browser():
+                async for message in gateway:
+                    if isinstance(message, bytes):
+                        await websocket.send_bytes(message)
+                    else:
+                        await websocket.send_text(message)
+
+            tasks = [
+                asyncio.create_task(browser_to_gateway()),
+                asyncio.create_task(gateway_to_browser()),
+            ]
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            for task in done:
+                if not task.cancelled() and task.exception():
+                    raise task.exception()
+    except Exception as exc:
+        logging.warning("remotedesktop WebSocket relay: %s", exc)
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 # ============================================================

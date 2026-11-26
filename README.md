@@ -3,7 +3,7 @@
 Webベースの CachyOS 管理ツール。Tailscale内のHTTPS経由でアクセス可能。
 [serv-UI](https://github.com/hirogura/servui) (Ubuntu/GRUB/apt) を CachyOS (Limine/pacman) 用に移植したもの。
 
-現在のバージョン: **v3.5.0**
+現在のバージョン: **v3.6.0**
 
 ## serv-UI からの主な変更点
 
@@ -19,7 +19,7 @@ Webベースの CachyOS 管理ツール。Tailscale内のHTTPS経由でアクセ
 | Timeshift | あり (rsync/btrfs) | なし (snapper があるため当面外す) |
 | 連携アプリ導入先 | Ubuntu版リポジトリ | Ubuntu/CachyOS共通リポジトリ (selfEx / selfcode / easylxd / vmmanager / Disk Manager / Ventoy-UI) |
 | インストール先 | `/opt/servui` / `servui` ユーザー / `servui.service` | `/opt/cachy-ui` / `cachyui` ユーザー / `cachyui.service` |
-| ポート | 3355 | 3355 (同じ)。連携アプリは 3329 / 3339 / 3361 / 3362 / 3363 / 3379 / 8090 |
+| ポート | 3355 | 3355 (同じ)。連携アプリは 3329 / 3339 / 3361 / 3362 / 3363 / 3379 / 8090。内蔵リモートデスクトップは新規公開ポートなし |
 
 ## 機能
 
@@ -34,6 +34,7 @@ Webベースの CachyOS 管理ツール。Tailscale内のHTTPS経由でアクセ
 | ディスク | ディスク・パーティション情報の表示専用ページ。パーティションの作成・削除・マウント・LVM操作は「Disk Manager」で実施 |
 | Limine編集 | Limineエントリー一覧・削除、ISOブートエントリー追加 (cachy-isoboot 方式)、/iso 状態表示・create-isopart 誘導、CachyOS ISO (エディション選択)・汎用ISOダウンロード（/isoへwget保存、進捗表示・キャンセル対応）、default_entry・表示時間(timeout) 設定 |
 | selfEx / Disk Manager / selfcode / Easy LXD / VM Manager | 連携アプリの導入状態確認と起動。未インストールの場合は確認ダイアログ表示後にターミナルでインストール、インストール済みならサイトを新しいタブで開く |
+| リモートデスクトップ | [SelfRDP](https://github.com/hirogura/selfrdp.git) の IronRDP WASM クライアントを内蔵。この PC (127.0.0.1:3389) 専用で、ユーザー名・任意パスワード・解像度を指定して接続。方式は自動判定、描画は軽量化固定。未導入時はターミナルでインストール |
 | バックアップ/復元 | /iso 内の Clonezilla Live ISO からカーネルを取り出して Limine 起動する無人パーティションバックアップ・復元 (cachyos-clonezilla-auto 方式)。SourceForge から Clonezilla Live ISO を選択・ダウンロードして /iso に保存可能 |
 | Snapper | snapper スナップショットの一覧・作成・復元 (rollback)・削除、複数一括削除、設定 (保持数など) とサブボリュームの管理 |
 | アプリ/設定 | よく使うアプリ (日本語入力・Chrome・Edge・Thunderbird・LibreOffice・VLC・SSH・リモートデスクトップ) のチェック式一括インストールとデスクトップショートカット作成 (cachyos-scripts の 3-soft.sh / 4-desktopicon.sh と同じ内容)。Ventoy-UI の導入、OpenCode Desktop の導入 (pacman + Tailscale Serve の HTTPS:3379 でテールネット内のみ公開) とペアリングリンク・パスワード表示、URLを開く・サービス再起動、ノートPCの蓋閉じスリープ抑止、pacman ロックファイル削除、旧 simdjson への切り戻し (更新直前のバージョンを自動選択、nodejs 再ビルドまで) |
@@ -80,6 +81,15 @@ Webベースの CachyOS 管理ツール。Tailscale内のHTTPS経由でアクセ
 - [Easy LXD (Ubuntu/CachyOS共通)](https://github.com/hirogura/easylxd.git) — `/opt/easy-lxd`, `:3329`
 - [vmmanager (Ubuntu/CachyOS共通)](https://github.com/hirogura/vmmanager.git) — `/opt/vm-manage`, `:8090`
 - [Ventoy-UI](https://github.com/hirogura/ventoy-ui.git) — `/opt/ventoy-ui`, `:3363` (「アプリ/設定」から導入)
+
+### リモートデスクトップ (SelfRDP 内蔵) について
+
+- [SelfRDP](https://github.com/hirogura/selfrdp.git) の IronRDP (Rust → WebAssembly) クライアントと Devolutions Gateway を `/opt/selfrdp` に導入します。インストールは `[install-selfrdp-cachy.sh](install-selfrdp-cachy.sh)` が行い、未導入時に画面の「インストール」ボタンからターミナルで実行されます。
+- 接続先は **この PC の 127.0.0.1:3389 固定**です。ホスト名や接続方式は UI に出しません (方式は自動判定、描画は軽量化固定)。
+- パスワードは任意です。RDP サーバー側が認証を要求する場合のみ入力してください (KRDP など)。
+- **Tailscale Serve の公開ポートは増やしません**。WASM アセットは cachy-UI の `/api/remotedesktop/assets/` から、Gateway への RDCleanPath WebSocket は `/ws/remotedesktop/jet` から中継するため、ブラウザは cachy-UI と同じ 3355 番だけを見ます。SelfRDP 単体の既定ポート 3375 とも衝突しません。
+- SelfRDP 本体は Gateway `:7171` と制御 API `:7172` のループバックだけで動きます。
+- RDP サーバー (「アプリ/設定」のリモートデスクトップ = `krdp` など) がこの PC で待受していないと接続できません。
 
 ## インストール
 
@@ -194,7 +204,8 @@ sudo systemctl stop cachyui
     ├── limine.conf + /boot/isos (Limine編集)
     ├── Clonezilla Live 取り出しブート (バックアップ/復元)
     ├── snapper (スナップショット管理)
-    └── WebSocket (ターミナル)
+    ├── WebSocket (ターミナル)
+    └── リモートデスクトップ (SelfRDP 内蔵: WASM 配信 / Gateway WebSocket 中継、公開ポートなし)
 
 [連携アプリ (別サービス・Tailscale Serve 経由)]
     ├── selfEx       :3362  /opt/selfex
