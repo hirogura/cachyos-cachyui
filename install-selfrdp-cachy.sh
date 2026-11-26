@@ -119,7 +119,7 @@ jq -n \
     ProvisionerPublicKeyFile: $pem,
     ProvisionerPrivateKeyFile: $key,
     Listeners: [{ InternalUrl: $int, ExternalUrl: $int }],
-    WebApp: { Enabled: false }
+    WebApp: { Enabled: false, Authentication: "None" }
   }' > "$tmp"
 install -m 0640 "$tmp" "$DGW_CFG_DIR/gateway.json"
 rm -f "$tmp"
