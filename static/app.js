@@ -15,6 +15,12 @@ let rdpSession = null;
 let rdpInputAbort = null;
 let rdpConnected = false;
 
+// リモート操作の認証情報はブラウザの localStorage にのみ保持する。
+// gitリポジトリ / サーバー上のファイルには書き込まないため push 対象外。
+const RDP_USER_KEY = 'cachyui_rdp_username';
+const RDP_PASSWORD_KEY = 'cachyui_rdp_password';
+const RDP_SAVE_PASSWORD_KEY = 'cachyui_rdp_save_password';
+
 const TERM_SESSION_KEY = 'cachyui_terminal_session';
 const TERM_SESSION_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
@@ -2011,7 +2017,13 @@ function renderRemoteDesktop(data) {
   }
 
   let savedUser = '';
-  try { savedUser = localStorage.getItem('cachyui_rdp_username') || ''; } catch (e) {}
+  let savedPassword = '';
+  let savePassword = true;
+  try {
+    savedUser = localStorage.getItem(RDP_USER_KEY) || '';
+    savePassword = localStorage.getItem(RDP_SAVE_PASSWORD_KEY) !== '0';
+    if (savePassword) savedPassword = localStorage.getItem(RDP_PASSWORD_KEY) || '';
+  } catch (e) {}
   const user = savedUser || data.user || '';
   const resolutions = ['1024x768', '1280x800', '1600x900', '1920x1080', '2560x1440', '3440x1440', '3840x2160'];
   const options = resolutions.map(r => `<option value="${r}"${r === '1280x800' ? ' selected' : ''}>${r.replace('x', ' × ')}</option>`).join('');
@@ -2036,11 +2048,16 @@ function renderRemoteDesktop(data) {
         </div>
         <div class="form-group" style="margin-bottom:0;">
           <label for="rdp-password">パスワード (任意)</label>
-          <input type="password" id="rdp-password" autocomplete="current-password" placeholder="不要なら空欄">
+          <input type="password" id="rdp-password" autocomplete="current-password" placeholder="不要なら空欄" value="${escapeAttr(savedPassword)}">
         </div>
         <div class="form-group" style="margin-bottom:0;">
           <label for="rdp-resolution">解像度</label>
           <select id="rdp-resolution">${options}</select>
+        </div>
+        <div class="form-group" style="margin-bottom:0;display:flex;align-items:center;">
+          <label for="rdp-save-password" style="display:flex;align-items:center;gap:0.4rem;margin:0;cursor:pointer;">
+            <input type="checkbox" id="rdp-save-password" ${savePassword ? 'checked' : ''}> パスワードを保存
+          </label>
         </div>
       </div>
       <div class="rdp-toolbar" style="margin-top:0.9rem;">
@@ -2050,6 +2067,9 @@ function renderRemoteDesktop(data) {
         <button class="btn btn-secondary" onclick="sendRdpKeys([91])" title="Windowsキー">Win</button>
         <button class="btn btn-secondary" onclick="sendRdpKeys([56,15])" title="Alt+Tab">Alt+Tab</button>
         <button class="btn btn-secondary" onclick="toggleRdpFullscreen()">全画面</button>
+      </div>
+      <div class="muted" style="font-size:0.75rem;margin-top:0.6rem;">
+        保存したパスワードはこのブラウザ内 (localStorage) にだけ保持され、gitリポジトリやサーバーのファイルには保存されません。
       </div>
     </div>
     <div id="rdp-session" class="rdp-session" style="display:none;"><canvas id="rdp-canvas" tabindex="0"></canvas></div>`;
@@ -2094,7 +2114,6 @@ async function connectRemoteDesktop() {
     showRemoteDesktopStatus('ユーザー名を入力してください', 'error');
     return;
   }
-  try { localStorage.setItem('cachyui_rdp_username', username); } catch (e) {}
   if (connectBtn) connectBtn.disabled = true;
 
   try {
@@ -2135,6 +2154,22 @@ async function connectRemoteDesktop() {
 
     rdpSession = await builder.connect();
     rdpConnected = true;
+
+    // 認証成功後にだけ保存する (誤ったパスワードを残さないため)。
+    // 保存先はブラウザの localStorage のみで、git / サーバーには書き込まない。
+    try {
+      const saveEl = document.getElementById('rdp-save-password');
+      const shouldSave = !saveEl || saveEl.checked;
+      localStorage.setItem(RDP_USER_KEY, username);
+      if (shouldSave) {
+        localStorage.setItem(RDP_SAVE_PASSWORD_KEY, '1');
+        localStorage.setItem(RDP_PASSWORD_KEY, password);
+      } else {
+        localStorage.setItem(RDP_SAVE_PASSWORD_KEY, '0');
+        localStorage.removeItem(RDP_PASSWORD_KEY);
+      }
+    } catch (e) {}
+
     const sessionEl = document.getElementById('rdp-session');
     if (sessionEl) sessionEl.style.display = 'block';
     bindRemoteDesktopInput(canvas, rdpSession);
