@@ -13,6 +13,7 @@ let terminalExitNotified = false;
 let rdpModule = null;
 let rdpSession = null;
 let rdpInputAbort = null;
+let rdpConnected = false;
 
 const TERM_SESSION_KEY = 'cachyui_terminal_session';
 const TERM_SESSION_RE = /^[A-Za-z0-9_-]{8,64}$/;
@@ -2024,6 +2025,7 @@ function renderRemoteDesktop(data) {
       <div class="muted" style="font-size:0.78rem;margin-top:0.4rem;">
         127.0.0.1:3389 に固定しています。接続方式は自動判定、描画は軽量化固定です。
         新しい公開ポートは作らず、cachy-UI と同じ 3355 番経由で接続します。
+        ユーザー名とパスワードはこの PC のログイン情報 (KRDP の認証) です。
       </div>
     </div>
     <div class="stat-card" style="margin-bottom:1rem;">
@@ -2132,6 +2134,7 @@ async function connectRemoteDesktop() {
       .extension(new mod.Extension('performance_flags', 0x87));
 
     rdpSession = await builder.connect();
+    rdpConnected = true;
     const sessionEl = document.getElementById('rdp-session');
     if (sessionEl) sessionEl.style.display = 'block';
     bindRemoteDesktopInput(canvas, rdpSession);
@@ -2144,7 +2147,19 @@ async function connectRemoteDesktop() {
     disconnectRemoteDesktop(false);
   } catch (err) {
     const detail = err && err.backtrace ? err.backtrace() : String(err);
-    showRemoteDesktopStatus('接続に失敗しました: ' + detail, 'error');
+    // サーバー側の認証拒否は "disconnect provider ultimatum" として通知される。
+    // この PC のログイン情報が必要であることを明示する。
+    if (/ultimatum|authentication|credential|password/i.test(detail)) {
+      showRemoteDesktopStatus(
+        '認証に失敗しました。このPCのログインユーザー名とパスワードを入力してください。'
+        + ' (初期値のユーザー名: ' + escapeHtml((document.getElementById('rdp-username')?.value || '').trim()) + ')',
+        'error'
+      );
+    } else if (rdpConnected) {
+      showRemoteDesktopStatus('セッションが切断されました: ' + detail, 'error');
+    } else {
+      showRemoteDesktopStatus('接続に失敗しました: ' + detail, 'error');
+    }
     disconnectRemoteDesktop(false);
   } finally {
     if (connectBtn) connectBtn.disabled = false;
@@ -2161,6 +2176,7 @@ function disconnectRemoteDesktop(ask = true) {
     try { rdpSession.shutdown(); } catch (e) {}
     rdpSession = null;
   }
+  rdpConnected = false;
   const sessionEl = document.getElementById('rdp-session');
   if (sessionEl) sessionEl.style.display = 'none';
   const disconnectBtn = document.getElementById('btn-rdp-disconnect');

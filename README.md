@@ -86,7 +86,7 @@ Webベースの CachyOS 管理ツール。Tailscale内のHTTPS経由でアクセ
 
 - [SelfRDP](https://github.com/hirogura/selfrdp.git) の IronRDP (Rust → WebAssembly) クライアントと Devolutions Gateway を `/opt/selfrdp` に導入します。インストールは `[install-selfrdp-cachy.sh](install-selfrdp-cachy.sh)` が行い、未導入時に画面の「インストール」ボタンからターミナルで実行されます。
 - 接続先は **この PC の 127.0.0.1:3389 固定**です。ホスト名や接続方式は UI に出しません (方式は自動判定、描画は軽量化固定)。
-- パスワードは任意です。RDP サーバー側が認証を要求する場合のみ入力してください (KRDP など)。
+- ユーザー名とパスワードはこの PC のログイン情報 (KRDP の認証) です。パスワード欄は任意ですが、KRDP が認証を要求する環境では正しいパスワードが必要です。誤ると `disconnect provider ultimatum` (認証失敗) で切断されます。
 - **Tailscale Serve の公開ポートは増やしません**。WASM アセットは cachy-UI の `/api/remotedesktop/assets/` から、Gateway への RDCleanPath WebSocket は `/ws/remotedesktop/jet` から中継するため、ブラウザは cachy-UI と同じ 3355 番だけを見ます。SelfRDP 単体の既定ポート 3375 とも衝突しません。
 - SelfRDP 本体は Gateway `:7171` と制御 API `:7172` のループバックだけで動きます。
 - RDP サーバー (「アプリ/設定」のリモートデスクトップ = `krdp` など) がこの PC で待受していないと接続できません。
