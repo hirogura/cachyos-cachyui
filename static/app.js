@@ -14,12 +14,14 @@ let rdpModule = null;
 let rdpSession = null;
 let rdpInputAbort = null;
 let rdpConnected = false;
+let rdpResizeObserver = null;
 
 // リモート操作の認証情報はブラウザの localStorage にのみ保持する。
 // gitリポジトリ / サーバー上のファイルには書き込まないため push 対象外。
 const RDP_USER_KEY = 'cachyui_rdp_username';
 const RDP_PASSWORD_KEY = 'cachyui_rdp_password';
 const RDP_SAVE_PASSWORD_KEY = 'cachyui_rdp_save_password';
+const RDP_VIEWMODE_KEY = 'cachyui_rdp_viewmode';
 
 const TERM_SESSION_KEY = 'cachyui_terminal_session';
 const TERM_SESSION_RE = /^[A-Za-z0-9_-]{8,64}$/;
@@ -1971,6 +1973,54 @@ function showRemoteDesktopStatus(msg, type) {
   el.textContent = msg || '';
 }
 
+// 表示サイズは SelfRDP と同じ3種類。既定は「縮小して全体表示」(比率維持・拡大なし)。
+function getRdpViewMode() {
+  let mode = 'fit';
+  try { mode = localStorage.getItem(RDP_VIEWMODE_KEY) || 'fit'; } catch (e) {}
+  return ['fit', 'fill', 'native'].includes(mode) ? mode : 'fit';
+}
+
+function applyRdpViewMode() {
+  const canvas = document.getElementById('rdp-canvas');
+  const wrap = document.getElementById('rdp-session');
+  const select = document.getElementById('rdp-viewmode');
+  if (!canvas || !wrap || !select) return;
+  const mode = select.value;
+  const cw = canvas.width || 1280;
+  const ch = canvas.height || 800;
+
+  if (mode === 'native') {
+    canvas.style.width = cw + 'px';
+    canvas.style.height = ch + 'px';
+    canvas.style.objectFit = 'contain';
+    wrap.style.overflow = 'auto';
+    // はみ出す場合に中央揃えだと左端までスクロールできないため先頭揃えにする。
+    wrap.style.justifyContent = 'flex-start';
+    wrap.style.alignItems = 'flex-start';
+  } else if (mode === 'fill') {
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
+    canvas.style.objectFit = 'fill';
+    wrap.style.overflow = 'hidden';
+    wrap.style.justifyContent = 'center';
+    wrap.style.alignItems = 'center';
+  } else {
+    // 縮小して全体表示: 枠に収まる範囲まで縮小するが、拡大はしない。
+    const scale = Math.min(
+      (wrap.clientWidth || cw) / cw,
+      (wrap.clientHeight || ch) / ch,
+      1
+    );
+    canvas.style.width = Math.floor(cw * scale) + 'px';
+    canvas.style.height = Math.floor(ch * scale) + 'px';
+    canvas.style.objectFit = 'contain';
+    wrap.style.overflow = 'hidden';
+    wrap.style.justifyContent = 'center';
+    wrap.style.alignItems = 'center';
+  }
+  try { localStorage.setItem(RDP_VIEWMODE_KEY, mode); } catch (e) {}
+}
+
 async function loadRemoteDesktopPage() {
   const container = document.getElementById('remotedesktop-container');
   if (!container) return;
@@ -2027,6 +2077,7 @@ function renderRemoteDesktop(data) {
   const user = savedUser || data.user || '';
   const resolutions = ['1024x768', '1280x800', '1600x900', '1920x1080', '2560x1440', '3440x1440', '3840x2160'];
   const options = resolutions.map(r => `<option value="${r}"${r === '1280x800' ? ' selected' : ''}>${r.replace('x', ' × ')}</option>`).join('');
+  const viewMode = getRdpViewMode();
 
   container.innerHTML = `
     <div class="stat-card" style="margin-bottom:1rem;">
@@ -2061,6 +2112,11 @@ function renderRemoteDesktop(data) {
         </div>
       </div>
       <div class="rdp-toolbar" style="margin-top:0.9rem;">
+        <select id="rdp-viewmode" onchange="applyRdpViewMode()" title="表示サイズ" style="padding:0.35rem 0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.8rem;">
+          <option value="fit"${viewMode === 'fit' ? ' selected' : ''}>縮小して全体表示</option>
+          <option value="fill"${viewMode === 'fill' ? ' selected' : ''}>ウィンドウに合わせる</option>
+          <option value="native"${viewMode === 'native' ? ' selected' : ''}>原寸大</option>
+        </select>
         <button class="btn btn-primary" id="btn-rdp-connect" onclick="connectRemoteDesktop()">接続</button>
         <button class="btn btn-secondary" id="btn-rdp-disconnect" onclick="disconnectRemoteDesktop()" disabled>切断</button>
         <button class="btn btn-secondary" onclick="sendRdpKeys([29,56,83])" title="Ctrl+Alt+Del">Ctrl+Alt+Del</button>
@@ -2207,6 +2263,10 @@ function disconnectRemoteDesktop(ask = true) {
     rdpInputAbort.abort();
     rdpInputAbort = null;
   }
+  if (rdpResizeObserver) {
+    rdpResizeObserver.disconnect();
+    rdpResizeObserver = null;
+  }
   if (rdpSession) {
     try { rdpSession.shutdown(); } catch (e) {}
     rdpSession = null;
@@ -2268,9 +2328,18 @@ function bindRemoteDesktopInput(canvas, session) {
   canvas.addEventListener('mousemove', e => {
     const r = canvas.getBoundingClientRect();
     const cw = canvas.width || 1280, ch = canvas.height || 800;
-    const s = Math.min(r.width / cw, r.height / ch);
-    const x = (e.clientX - r.left - (r.width - cw * s) / 2) / s;
-    const y = (e.clientY - r.top - (r.height - ch * s) / 2) / s;
+    const mode = (document.getElementById('rdp-viewmode')?.value) || getRdpViewMode();
+    let x, y;
+    if (mode === 'fill') {
+      // 比率を無視して枠いっぱいに伸ばしているため、縦横別に換算する。
+      x = (e.clientX - r.left) * cw / r.width;
+      y = (e.clientY - r.top) * ch / r.height;
+    } else {
+      // fit / native は要素自体が比率維持でリサイズされるためレターボックスは無い。
+      const s = Math.min(r.width / cw, r.height / ch) || 1;
+      x = (e.clientX - r.left) / s;
+      y = (e.clientY - r.top) / s;
+    }
     rdpSendTransaction([rdpModule.DeviceEvent.mouseMove(x, y)]);
   }, opt);
   canvas.addEventListener('mousedown', e => rdpSendTransaction([rdpModule.DeviceEvent.mouseButtonPressed(e.button)]), opt);
@@ -2293,6 +2362,18 @@ function bindRemoteDesktopInput(canvas, session) {
       rdpSendTransaction([rdpModule.DeviceEvent.keyReleased(sc)]);
     }
   }, opt);
+
+  // 表示モードを適用する。IronRDP が canvas の実サイズを決めるのはrun()開始後なので、
+  // すぐ + 少し遅れてにも適用し直す (SelfRDP と同じ)。
+  applyRdpViewMode();
+  setTimeout(applyRdpViewMode, 200);
+  setTimeout(applyRdpViewMode, 1000);
+  if (rdpResizeObserver) rdpResizeObserver.disconnect();
+  if (typeof ResizeObserver !== 'undefined') {
+    rdpResizeObserver = new ResizeObserver(() => applyRdpViewMode());
+    rdpResizeObserver.observe(document.getElementById('rdp-session'));
+  }
+  window.addEventListener('resize', applyRdpViewMode, { signal: ac.signal });
   canvas.focus();
 }
 
