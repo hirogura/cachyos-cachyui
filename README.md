@@ -3,7 +3,7 @@
 Webベースの CachyOS 管理ツール。Tailscale内のHTTPS経由でアクセス可能。
 [serv-UI](https://github.com/hirogura/servui) (Ubuntu/GRUB/apt) を CachyOS (Limine/pacman) 用に移植したもの。
 
-現在のバージョン: **v3.6.3**
+現在のバージョン: **v3.7.0**
 
 ## serv-UI からの主な変更点
 

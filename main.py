@@ -41,7 +41,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="cachy-UI", version="3.6.3")
+app = FastAPI(title="cachy-UI", version="3.7.0")
 
 
 @app.middleware("http")
