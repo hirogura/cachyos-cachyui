@@ -258,6 +258,12 @@ async function loadDashboard() {
       }
     }
 
+    // CPUの種類 (/proc/cpuinfo の model name)
+    const cpuModelEl = document.getElementById('cpu-model');
+    if (cpuModelEl) {
+      cpuModelEl.textContent = `CPU: ${data.cpu.model || '--'}`;
+    }
+
     document.getElementById('cpu-detail').textContent =
       `${data.cpu.count_physical}コア | Load: ${data.cpu.load_avg['1min']} / ${data.cpu.load_avg['5min']} / ${data.cpu.load_avg['15min']}`;
 

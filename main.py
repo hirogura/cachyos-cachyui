@@ -41,7 +41,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="cachy-UI", version="3.7.1")
+app = FastAPI(title="cachy-UI", version="3.7.2")
 
 
 @app.middleware("http")
@@ -177,6 +177,21 @@ def get_primary_user() -> tuple[str, str, str]:
 
 
 
+def get_cpu_model() -> str | None:
+    """/proc/cpuinfo から CPU の種類 (model name) を取得する。取得できない場合は None。"""
+    try:
+        with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                key, sep, value = line.partition(":")
+                if sep and key.strip().lower() in ("model name", "hardware"):
+                    model = value.strip()
+                    if model:
+                        return model
+    except OSError:
+        pass
+    return None
+
+
 def get_cpu_temperature() -> float | None:
     """Get current CPU temperature in Celsius across different hardware platforms."""
     try:
@@ -231,6 +246,7 @@ async def system_info():
     cpu_percent = psutil.cpu_percent(interval=1)
     cpu_freq = psutil.cpu_freq()
     cpu_count = psutil.cpu_count()
+    cpu_model = get_cpu_model()
     load_avg = os.getloadavg()
     cpu_temp = get_cpu_temperature()
 
@@ -275,6 +291,7 @@ async def system_info():
         "boot_time": boot_time.isoformat(),
         "cpu": {
             "percent": cpu_percent,
+            "model": cpu_model,
             "count_physical": cpu_count,
             "freq_current": round(cpu_freq.current, 0) if cpu_freq else None,
             "temp": cpu_temp,
