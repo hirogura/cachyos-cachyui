@@ -2793,9 +2793,11 @@ async function installCachyosRecovery() {
       + '確実に実行するため、ターミナルは新しいシェルで開き直します。\n'
       + '実行中の処理がある場合は停止します。')) return;
 
-  const cmd = 'if pacman -Qi limine-snapper-sync >/dev/null 2>&1; then '
+  // ユーザーのシェルは fish の場合があるため、bash 経由で実行する。
+  // (fish では if ...; then ...; fi は構文エラーになる)
+  const cmd = "bash -c 'if pacman -Qi limine-snapper-sync >/dev/null 2>&1; then "
     + 'sudo pacman -Rns --noconfirm limine-snapper-sync; fi; '
-    + 'sudo pacman -S --noconfirm cachyos-recovery';
+    + "sudo pacman -S --noconfirm cachyos-recovery'";
 
   // 既存セッションに入力待ちのプロセスが残っているとコマンドが吸われるため、
   // 新しいセッション (シェル) を起動してから送る。
@@ -2812,26 +2814,46 @@ async function installCachyosRecovery() {
   switchTab('terminal'); // connectTerminal() が新しいセッションを開始する
   showStatus('limine-snapper-sync の確認と cachyos-recovery のインストールをターミナルで実行します。', 'info');
 
-  // コマンドと Enter は別送信にする (まとめて送ると受け付けないシェルがあるため)。
-  const start = Date.now();
-  const trySend = () => {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      setTimeout(() => {
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
-        ws.send(JSON.stringify({ type: 'input', data: cmd }));
-        setTimeout(() => {
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'input', data: '\r' }));
-          }
-        }, 200);
-      }, 600);
-    } else if (Date.now() - start < 10000) {
-      setTimeout(trySend, 150);
-    } else {
+  const targetWs = ws;
+  let sent = false;
+  const sendCommand = () => {
+    const socket = targetWs;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
       showStatus('ターミナルに接続できませんでした', 'error');
+      return;
+    }
+    // コマンドと Enter は別送信にする (まとめて送ると受け付けないシェルがあるため)。
+    socket.send(JSON.stringify({ type: 'input', data: cmd }));
+    setTimeout(() => {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'input', data: '\r' }));
+      }
+    }, 200);
+  };
+
+  // fish は起動時の端末クエリ待ちでプロンプトが出るまで十数秒かかることがあり、
+  // その前に送った入力は捨てられる。出力にプロンプト印が出てから送信する。
+  const originalOnMessage = targetWs.onmessage;
+  targetWs.onmessage = (event) => {
+    if (originalOnMessage) originalOnMessage(event);
+    if (sent) return;
+    let msg = null;
+    try { msg = JSON.parse(event.data); } catch (e) {}
+    const data = msg && msg.type === 'output' ? (msg.data || '') : '';
+    if (data.includes('\x1b]133;B') || data.includes('❯') || /\$ $/.test(data) || /# $/.test(data)) {
+      sent = true;
+      targetWs.onmessage = originalOnMessage;
+      setTimeout(sendCommand, 200);
     }
   };
-  trySend();
+  // プロンプトを検出できないシェルでも、一定時間後に実行を試みる。
+  setTimeout(() => {
+    if (!sent) {
+      sent = true;
+      targetWs.onmessage = originalOnMessage;
+      sendCommand();
+    }
+  }, 20000);
 }
 
 async function loadSnapperPage() {
