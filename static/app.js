@@ -2781,14 +2781,18 @@ let snapperConfigs = [];
 
 // cachyos-recovery を導入する。limine-snapper-sync が残っている場合は
 // 先に削除してからインストールする (両方のブート連携が競合しないようにするため)。
+// pacman の確認プロンプトは --noconfirm でスキップし、削除が失敗/キャンセルされても
+// インストールは必ず実行する (&& でつなぐと削除が止まったまま後続が消えるため)。
 async function installCachyosRecovery() {
   if (!confirm('cachyos-recovery をインストールしますか？\n\n'
       + 'limine-snapper-sync がインストール済みの場合は、先に sudo pacman -Rns limine-snapper-sync で削除し、\n'
       + 'その後 sudo pacman -S cachyos-recovery でインストールします。\n'
+      + 'pacman の確認は自動でスキップします (sudo のパスワード入力は必要な場合があります)。\n'
       + '処理はターミナルで実行されます。')) return;
 
   const cmd = 'if pacman -Qi limine-snapper-sync >/dev/null 2>&1; then '
-    + 'sudo pacman -Rns limine-snapper-sync; fi && sudo pacman -S cachyos-recovery';
+    + 'sudo pacman -Rns --noconfirm limine-snapper-sync; fi; '
+    + 'sudo pacman -S --noconfirm cachyos-recovery';
   await sendToTerminal(
     cmd,
     'limine-snapper-sync の確認と cachyos-recovery のインストールをターミナルで実行します。'
