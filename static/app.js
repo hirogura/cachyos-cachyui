@@ -921,7 +921,9 @@ function clearTerminal() {
 }
 
 function connectTerminal() {
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+  // 接続中にここで閉じると、そのまま再接続されずに取り残されるため待つ。
+  if (ws && ws.readyState === WebSocket.CONNECTING) return;
+  if (ws && ws.readyState === WebSocket.OPEN) {
     ws.close();
     return;
   }
@@ -2788,15 +2790,48 @@ async function installCachyosRecovery() {
       + 'limine-snapper-sync がインストール済みの場合は、先に sudo pacman -Rns limine-snapper-sync で削除し、\n'
       + 'その後 sudo pacman -S cachyos-recovery でインストールします。\n'
       + 'pacman の確認は自動でスキップします (sudo のパスワード入力は必要な場合があります)。\n'
-      + '処理はターミナルで実行されます。')) return;
+      + '確実に実行するため、ターミナルは新しいシェルで開き直します。\n'
+      + '実行中の処理がある場合は停止します。')) return;
 
   const cmd = 'if pacman -Qi limine-snapper-sync >/dev/null 2>&1; then '
     + 'sudo pacman -Rns --noconfirm limine-snapper-sync; fi; '
     + 'sudo pacman -S --noconfirm cachyos-recovery';
-  await sendToTerminal(
-    cmd,
-    'limine-snapper-sync の確認と cachyos-recovery のインストールをターミナルで実行します。'
-  );
+
+  // 既存セッションに入力待ちのプロセスが残っているとコマンドが吸われるため、
+  // 新しいセッション (シェル) を起動してから送る。
+  const oldId = getTerminalSessionId();
+  if (ws) {
+    ws.onclose = null;
+    ws.onerror = null;
+    try { ws.close(); } catch (e) {}
+    ws = null;
+  }
+  await killTerminalSession(oldId);
+  resetTerminalSessionId();
+  pendingTerminalCwd = null;
+  switchTab('terminal'); // connectTerminal() が新しいセッションを開始する
+  showStatus('limine-snapper-sync の確認と cachyos-recovery のインストールをターミナルで実行します。', 'info');
+
+  // コマンドと Enter は別送信にする (まとめて送ると受け付けないシェルがあるため)。
+  const start = Date.now();
+  const trySend = () => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      setTimeout(() => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({ type: 'input', data: cmd }));
+        setTimeout(() => {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'input', data: '\r' }));
+          }
+        }, 200);
+      }, 600);
+    } else if (Date.now() - start < 10000) {
+      setTimeout(trySend, 150);
+    } else {
+      showStatus('ターミナルに接続できませんでした', 'error');
+    }
+  };
+  trySend();
 }
 
 async function loadSnapperPage() {
