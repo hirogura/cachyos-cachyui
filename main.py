@@ -41,7 +41,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="cachy-UI", version="3.7.0")
+app = FastAPI(title="cachy-UI", version="3.7.1")
 
 
 @app.middleware("http")
@@ -4379,7 +4379,10 @@ async def snapper_status():
     which = await run_cmd("which snapper", timeout=5)
     installed = which["returncode"] == 0
     configs = await _snapper_list_configs() if installed else []
-    return {"installed": installed, "configs": configs}
+    # cachyos-recovery の導入状態 (Snapper 画面の「導入済み」バッジ表示に使う)
+    recovery = await run_cmd("pacman -Qi cachyos-recovery 2>/dev/null", timeout=5)
+    recovery_installed = recovery["returncode"] == 0
+    return {"installed": installed, "configs": configs, "recovery_installed": recovery_installed}
 
 
 @app.get("/api/snapper/snapshots")

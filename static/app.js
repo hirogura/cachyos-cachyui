@@ -2780,6 +2780,37 @@ async function runRestore() {
 
 // --- Snapper ---
 let snapperConfigs = [];
+let recoveryStatusTimer = null;
+
+// cachyos-recovery の導入バッジを更新する (導入ボタンの右に表示する)
+function setRecoveryBadge(installed) {
+  const badgeEl = document.getElementById('snapper-recovery-badge');
+  if (!badgeEl) return;
+  badgeEl.innerHTML = installed
+    ? '<span class="badge badge-active">導入済み</span>'
+    : '';
+}
+
+// 導入はターミナルで非同期に実行されるため、完了をポーリングしてバッジに反映する。
+async function pollRecoveryInstallStatus() {
+  if (recoveryStatusTimer) clearTimeout(recoveryStatusTimer);
+  const check = async (remaining) => {
+    try {
+      const resp = await fetch('/api/snapper/status');
+      const data = await resp.json().catch(() => ({}));
+      if (data.recovery_installed) {
+        setRecoveryBadge(true);
+        return;
+      }
+    } catch (e) {
+      // 取得失敗は次のポーリングに期待する
+    }
+    if (remaining > 0) {
+      recoveryStatusTimer = setTimeout(() => check(remaining - 1), 5000);
+    }
+  };
+  await check(24); // 最大2分
+}
 
 // cachyos-recovery を導入する。limine-snapper-sync が残っている場合は
 // 先に削除してからインストールする (両方のブート連携が競合しないようにするため)。
@@ -2854,6 +2885,8 @@ async function installCachyosRecovery() {
       sendCommand();
     }
   }, 20000);
+  // ターミナルでの導入完了を検知してバッジを更新する
+  pollRecoveryInstallStatus();
 }
 
 async function loadSnapperPage() {
@@ -2862,6 +2895,7 @@ async function loadSnapperPage() {
   try {
     const resp = await fetch('/api/snapper/status');
     const data = await resp.json();
+    setRecoveryBadge(!!data.recovery_installed);
     if (!data.installed) {
       statusEl.className = 'status-msg show error';
       statusEl.textContent = 'snapper がインストールされていません (sudo pacman -S snapper)';
