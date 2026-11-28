@@ -41,7 +41,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="cachy-UI", version="3.7.2")
+app = FastAPI(title="cachy-UI", version="3.7.3")
 
 
 @app.middleware("http")
@@ -192,6 +192,58 @@ def get_cpu_model() -> str | None:
     return None
 
 
+async def get_memory_type() -> str | None:
+    """dmidecode からメモリの種類と速度を取得する (例: DDR4 3200 MT/s)。"""
+    r = await run_cmd("dmidecode -t memory 2>/dev/null", timeout=5)
+    if r["returncode"] != 0:
+        return None
+    for block in re.split(r"Handle 0x[0-9A-Fa-f]+", r["stdout"] or ""):
+        if "Memory Device" not in block:
+            continue
+        fields = {}
+        for line in block.splitlines():
+            key, sep, value = line.strip().partition(":")
+            if sep:
+                fields[key.strip()] = value.strip()
+        size = fields.get("Size", "")
+        if not size or size in ("No Module Installed", "Unknown"):
+            continue
+        mem_type = fields.get("Type", "")
+        if not mem_type or mem_type == "Unknown":
+            continue
+        speed = fields.get("Configured Memory Speed") or fields.get("Speed") or ""
+        if speed == "Unknown":
+            speed = ""
+        return f"{mem_type} {speed}".strip() if speed else mem_type
+    return None
+
+
+async def get_disk_type() -> str | None:
+    """ルートディスクの種別 (NVMe SSD / SSD / HDD) とモデル名を取得する。"""
+    src = await _disk_findmnt_source("/")
+    if not src.startswith("/dev/"):
+        return None
+    r = await run_cmd(f"lsblk -n -o PKNAME {shlex.quote(src)} 2>/dev/null", timeout=5)
+    parent = (r["stdout"] or "").strip().split("\n")[0].strip()
+    disk_name = parent or os.path.basename(src)
+    kind = "NVMe SSD" if disk_name.startswith("nvme") else "SSD"
+    if disk_name:
+        try:
+            with open(f"/sys/block/{disk_name}/queue/rotational") as f:
+                if f.read().strip() == "1":
+                    kind = "HDD"
+        except OSError:
+            pass
+        try:
+            with open(f"/sys/block/{disk_name}/device/model") as f:
+                model = f.read().strip()
+        except OSError:
+            model = ""
+        if model:
+            return f"{kind}: {model}"
+    return kind
+
+
 def get_cpu_temperature() -> float | None:
     """Get current CPU temperature in Celsius across different hardware platforms."""
     try:
@@ -253,6 +305,8 @@ async def system_info():
     mem = psutil.virtual_memory()
     swap = psutil.swap_memory()
     disk = psutil.disk_usage("/")
+    memory_type = await get_memory_type()
+    disk_type = await get_disk_type()
 
     boot_time = datetime.fromtimestamp(psutil.boot_time())
     uptime = datetime.now() - boot_time
@@ -303,6 +357,7 @@ async def system_info():
         },
         "memory": {
             "total": mem.total,
+            "type": memory_type,
             "available": mem.available,
             "used": mem.used,
             "percent": mem.percent,
@@ -312,6 +367,7 @@ async def system_info():
         },
         "disk": {
             "total": disk.total,
+            "type": disk_type,
             "used": disk.used,
             "free": disk.free,
             "percent": disk.percent,

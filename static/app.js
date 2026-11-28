@@ -276,6 +276,10 @@ async function loadDashboard() {
     const memUsedGB = (data.memory.used / 1073741824).toFixed(1);
     const memTotalGB = (data.memory.total / 1073741824).toFixed(1);
     document.getElementById('mem-detail').textContent = `${memUsedGB} GB / ${memTotalGB} GB`;
+    const memTypeEl = document.getElementById('mem-type');
+    if (memTypeEl) {
+      memTypeEl.textContent = `メモリ: ${data.memory.type || '--'}`;
+    }
 
     // Disk
     const diskPct = data.disk.percent;
@@ -286,6 +290,10 @@ async function loadDashboard() {
     const diskUsedGB = (data.disk.used / 1073741824).toFixed(1);
     const diskTotalGB = (data.disk.total / 1073741824).toFixed(1);
     document.getElementById('disk-detail').textContent = `${diskUsedGB} GB / ${diskTotalGB} GB`;
+    const diskTypeEl = document.getElementById('disk-type');
+    if (diskTypeEl) {
+      diskTypeEl.textContent = `ディスク: ${data.disk.type || '--'}`;
+    }
 
     // System info
     const uptimeH = Math.floor(data.uptime_seconds / 3600);
